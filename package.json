@@ -1,0 +1,15 @@
+{
+  "name": "yanji-rewrite-studio",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "言己：把参考稿重构成你的口播表达",
+  "scripts": {
+    "start": "node server/index.mjs",
+    "dev": "node --watch server/index.mjs",
+    "test": "node --test"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

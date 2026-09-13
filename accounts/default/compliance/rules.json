@@ -1,0 +1,57 @@
+{
+  "version": 1,
+  "source": "用户提供的短视频违禁词.docx",
+  "sourceStatus": "user_supplied_pending_official_verification",
+  "note": "以下规则用于风险提示，不等同于平台官方完整禁词表。带有绝对处罚或统计数字的说法在引用前仍需核验官方原文。",
+  "categories": [
+    {
+      "id": "politics",
+      "name": "国家与政治",
+      "defaultSeverity": "high",
+      "patterns": ["领导人姓名", "军队番号", "领土争议", "危害国家安全"],
+      "guidance": "使用准确来源与正式口径，避免调侃、煽动和无依据解读。"
+    },
+    {
+      "id": "violence",
+      "name": "暴力与危险行为",
+      "defaultSeverity": "high",
+      "patterns": ["自杀方法", "无装备攀岩", "高空抛物", "手雷", "AK47"],
+      "guidance": "避免提供可模仿的危险细节，画面和字幕需共同检查。"
+    },
+    {
+      "id": "medical",
+      "name": "医疗健康",
+      "defaultSeverity": "high",
+      "patterns": ["根治", "三天降血压", "神医", "秘方", "100%有效"],
+      "guidance": "不得承诺疗效；疾病、药品和器械相关内容需要资质与可靠来源。"
+    },
+    {
+      "id": "commercial",
+      "name": "商业与广告",
+      "defaultSeverity": "high",
+      "patterns": ["全网最低价", "国家级认证", "保证", "稳赚", "暴富"],
+      "guidance": "删除绝对化承诺、收益保证和无法证明的认证表述。"
+    },
+    {
+      "id": "minors",
+      "name": "未成年人保护",
+      "defaultSeverity": "high",
+      "patterns": ["早孕妈妈", "校园霸凌", "未成年人危险模仿"],
+      "guidance": "避免危险示范、羞辱标签和对未成年人的不当呈现。"
+    },
+    {
+      "id": "sexual",
+      "name": "低俗与色情",
+      "defaultSeverity": "high",
+      "patterns": ["胸大", "翘臀", "干爹", "包养", "约吗"],
+      "guidance": "结合上下文识别性暗示和擦边表达，不以谐音错字规避审核。"
+    },
+    {
+      "id": "values",
+      "name": "歧视与迷信",
+      "defaultSeverity": "medium",
+      "patterns": ["算命", "改运", "驱鬼", "地域歧视", "外貌羞辱"],
+      "guidance": "避免迷信承诺、群体标签化、地域攻击和外貌羞辱。"
+    }
+  ]
+}

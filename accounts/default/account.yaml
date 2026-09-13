@@ -1,0 +1,13 @@
+id: default
+name: 示例账号
+description: 这是一个示例账号配置，请替换为你自己的账号信息。
+profile_dir: profile
+memory_file: memory/content_memory.md
+skills_dir: skills
+ideas_dir: ideas
+facts_dir: facts
+compliance_dir: compliance
+material_policy:
+  mode: reference_only
+  allow_original_material_edits: false
+  note: 所选素材仅作为项目上下文和证据参考，不作为可直接复制的原文。

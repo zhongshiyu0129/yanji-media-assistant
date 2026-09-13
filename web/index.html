@@ -1,0 +1,139 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="theme-color" content="#10111a" />
+    <meta name="description" content="言己，读懂参考稿，重写成你的表达。" />
+    <title>言己 · 口播稿重构助手</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <div class="app-shell">
+      <aside class="sidebar" id="sidebar">
+        <div class="brand">
+          <div class="brand-symbol" aria-hidden="true"><i></i><i></i></div>
+          <div><strong>言己</strong><span>口播稿重构助手</span></div>
+        </div>
+
+        <button class="new-project" id="newProjectButton">
+          <span class="plus">＋</span><span><b>新建改写</b><small>从一篇参考稿开始</small></span>
+        </button>
+
+        <div class="sidebar-heading"><span>最近创作</span><span id="projectCount">0</span></div>
+        <div class="domain-filters" id="domainFilters" aria-label="按领域筛选"></div>
+        <div class="project-list" id="projectList"></div>
+
+        <div class="sidebar-footer">
+          <div class="profile-dot">我</div>
+          <button class="memory-entry" id="memoryButton"><strong>我的偏好与记忆</strong><span><i></i> <u id="memoryCount">查看账号记忆</u></span></button>
+          <button id="aiSettingsButton" title="AI 设置" aria-label="AI 设置">•••</button>
+        </div>
+      </aside>
+
+      <main class="workspace">
+        <header class="topbar">
+          <div class="topbar-left">
+            <button class="mobile-menu" id="mobileMenu" aria-label="打开项目列表">☰</button>
+            <div class="project-path"><span>我的创作</span><b>/</b><strong id="breadcrumbTitle">载入中</strong></div>
+          </div>
+          <div class="top-actions">
+            <span class="save-state"><i></i><span id="saveState">已自动保存在本地</span></span>
+            <button class="ghost-button" id="processButton">处理轨迹</button>
+            <button class="ghost-button ai-chat-button top-workflow-action" id="openChatButton">和 AI 对话</button>
+            <button class="generate-button top-workflow-action" id="generateButton"><span class="spark">✦</span> 生成我的稿</button>
+          </div>
+        </header>
+
+        <div class="main-content">
+          <section class="intro-row">
+            <div>
+            <div class="eyebrow">言己 · CONTENT STUDIO</div>
+              <h1>把参考稿，写成<span>我的表达</span></h1>
+              <p>从原稿整理到发布素材，每一步都能看、能改、能选择。</p>
+            </div>
+            <div class="project-meta">
+              <strong id="projectTitle">载入项目…</strong>
+              <span id="projectMeta">正在读取</span>
+            </div>
+          </section>
+
+          <nav class="workflow-nav" id="workflowNav" aria-label="写稿流程">
+            <button class="active" data-stage="source"><span>1</span><b>原稿整理</b><small>纠错与分段</small></button>
+            <button data-stage="rewrite"><span>2</span><b>AI 改写</b><small>结构与风格</small></button>
+            <button data-stage="openings"><span>3</span><b>开头结尾</b><small>组合成稿</small></button>
+            <button data-stage="review"><span>4</span><b>全文审校</b><small>事实与违禁词</small></button>
+            <button data-stage="publish"><span>5</span><b>发布素材</b><small>标题与互动</small></button>
+          </nav>
+
+          <section class="stage-card" id="stageContent" aria-live="polite"></section>
+        </div>
+      </main>
+    </div>
+
+    <dialog id="processDialog" class="process-modal">
+      <div class="process-dialog-head"><div><span>PROCESS TRACE</span><h2>这篇稿子是怎样生成的</h2></div><button class="close-button" id="closeProcessButton" aria-label="关闭">×</button></div>
+      <div class="process-layout">
+        <nav id="processNav"></nav>
+        <article id="processContent"></article>
+      </div>
+    </dialog>
+
+    <dialog id="editorDialog" class="editor-modal">
+      <div class="process-dialog-head"><div><span>FINAL SCRIPT</span><h2>编辑我的口播稿</h2></div><button class="close-button" id="closeEditorButton" aria-label="关闭">×</button></div>
+      <textarea id="resultEditor" spellcheck="false"></textarea>
+      <div class="dialog-actions"><button class="ghost-button" id="cancelResultEdit">取消</button><button class="generate-button" id="saveResultButton">保存成稿</button></div>
+    </dialog>
+
+    <dialog id="projectManageDialog" class="modal project-manage-modal">
+      <form method="dialog" id="projectManageForm">
+        <div class="dialog-head"><div><span>ORGANIZE</span><h2>整理这篇稿件</h2><p>可以修改侧栏标题、领域和归类标签。</p></div><button value="cancel" class="close-button" aria-label="关闭">×</button></div>
+        <input type="hidden" id="manageProjectId" />
+        <label>侧栏标题<input id="manageTitle" maxlength="60" required /></label>
+        <label>所属领域<select id="manageDomain"><option>历史</option><option>地理</option><option>时事</option><option>人文</option><option>社会</option><option>生活</option><option>健康</option><option>财经</option><option>科技</option><option>教育</option><option>文化</option><option>其他</option></select></label>
+        <label>归类标签<input id="manageTags" placeholder="多个标签用逗号隔开，最多 3 个" /></label>
+        <div class="dialog-actions"><button type="button" class="danger-text" id="deleteProjectButton">删除稿件</button><button value="cancel" class="ghost-button">取消</button><button value="default" class="generate-button">保存整理</button></div>
+      </form>
+    </dialog>
+
+    <dialog id="rewritePromptDialog" class="modal rewrite-prompt-modal">
+      <form method="dialog" id="rewritePromptForm">
+        <div class="dialog-head"><div><span>STAGE REQUEST</span><h2 id="instructionDialogTitle">这一次有什么特殊要求？</h2><p>基础规则始终保持，这里只补充当前环节的特别要求。</p></div><button value="cancel" class="close-button" aria-label="关闭">×</button></div>
+        <div class="fixed-requirements" id="fixedRequirements"></div>
+        <label>本次特殊要求<textarea id="specialInstructions" placeholder="例如：少讲明星，多讲普通人的处境；语气克制一点；增加两个具体例子……"></textarea></label>
+        <div class="dialog-actions"><button type="button" class="danger-text" id="clearSpecialButton">清空</button><button value="cancel" class="ghost-button">取消</button><button type="button" class="ghost-button" id="saveInstructionButton">只保存要求</button><button value="default" class="generate-button">保存并生成</button></div>
+      </form>
+    </dialog>
+
+    <dialog id="chatDialog" class="assistant-dialog">
+      <div class="assistant-head"><div><span>AI CO-WRITER</span><h2 id="chatDialogTitle">和 AI 一起改这篇稿</h2><p><i></i><span id="chatMemoryStatus">正在读取记忆…</span></p></div><button class="close-button" id="closeChatButton" aria-label="关闭">×</button></div>
+      <div class="chat-context"><span id="chatStageBadge">当前环节</span><p id="chatCardContext">这篇稿的对话会一直保留，并参与后面的生成。</p></div>
+      <div class="chat-messages" id="chatMessages"></div>
+      <form id="chatForm" class="chat-compose">
+        <textarea id="chatInput" placeholder="告诉 AI 你想怎么改，或者问它为什么这样写…" required></textarea>
+        <div><span>Enter 发送 · Shift+Enter 换行</span><button class="generate-button" id="sendChatButton">发送</button></div>
+      </form>
+    </dialog>
+
+    <dialog id="sourcePreviewDialog" class="source-preview-modal">
+      <div class="source-preview-head"><div><span>SOURCE PREVIEW</span><h2 id="sourcePreviewTitle">来源预览</h2><p id="sourcePreviewUrl"></p></div><button class="close-button" id="closeSourcePreviewButton" aria-label="关闭">×</button></div>
+      <div class="source-preview-body" id="sourcePreviewBody"></div>
+      <div class="source-preview-actions"><span>黄色部分是与当前核验点最相关的原文位置</span><a id="openOriginalSource" target="_blank" rel="noreferrer">打开完整原网页 ↗</a></div>
+    </dialog>
+
+    <dialog id="aiSettingsDialog" class="modal ai-settings-modal">
+      <form method="dialog" id="aiSettingsForm">
+        <div class="dialog-head"><div><span>AI CONNECTION</span><h2>连接 AI 服务</h2><p>已支持 DeepSeek，也保留 OpenAI 作为可选服务。</p></div><button value="cancel" class="close-button" aria-label="关闭">×</button></div>
+        <label>AI 服务<select id="providerInput" name="provider"><option value="deepseek">DeepSeek</option><option value="openai">OpenAI</option></select></label>
+        <label>API Key<input id="apiKeyInput" name="apiKey" type="password" autocomplete="off" placeholder="sk-…" /></label>
+        <label>模型<input id="modelInput" name="model" value="gpt-5.4-mini" autocomplete="off" /></label>
+        <div class="connection-note"><i id="connectionDot"></i><span id="connectionText">正在检查连接方式…</span></div>
+        <p class="privacy-note">使用时，当前环节的稿件会发送给所选 AI 服务。DeepSeek 负责整理、改写和包装，但不自带实时网页搜索；切换 OpenAI 后，事实核验可启用联网来源搜索。</p>
+        <div class="dialog-actions"><button type="button" class="danger-text" id="clearAIKeyButton">清除密钥</button><button value="cancel" class="ghost-button">取消</button><button value="default" class="generate-button">保存并试用</button></div>
+      </form>
+    </dialog>
+
+    <div class="toast" id="toast"></div>
+    <script type="module" src="/app.js"></script>
+  </body>
+</html>
