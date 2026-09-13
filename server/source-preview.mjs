@@ -341,39 +341,54 @@ function scoreSource(item, terms, peopleTerms) {
   return score;
 }
 
-export async function searchWebSources(query, options = {}) {
-  const text = evidenceQuery(query);
-  if (!text) return [];
-  const terms = text.split(/\s+/u).filter(Boolean);
-  const peopleTerms = ["吴京", "那英", "郎朗", "郎平", "关晓彤", "关之琳", "金巧巧"].filter((name) => terms.includes(name));
-  const serperKey = options.serperApiKey || options.searchApiKey || process.env.SERPER_API_KEY || "";
-  const all = [];
-
+async function searchOneText(text, serperKey, fallbackKind) {
+  const found = [];
   // 第一优先：Serper API（稳定的Google搜索结果）
   if (serperKey) {
-    const serperResults = await serperSearch(text, serperKey);
-    all.push(...serperResults);
+    found.push(...await serperSearch(text, serperKey));
   }
-
   // Fallback：公开搜索引擎HTML抓取（免费但不稳定）
-  // 如果Serper已经返回了足够多的结果，就不再跑HTML抓取
-  const needFallback = !serperKey || all.length < 4;
+  const needFallback = !serperKey || found.length < 4;
   if (needFallback) {
-    const searchTasks = serperKey
-      ? [() => bingSearch(text)]
+    // 多查询时每个查询轮换不同的fallback引擎，避免总时长过长
+    const engineSets = serperKey
+      ? [[() => bingSearch(text)]]
       : [
-          () => bingSearch(text),
-          () => duckSearch(`${text} site:gov.cn`),
-          () => sogouSearch(`${text} 故宫博物院`),
-          () => sogouSearch(`${text} 政府 高校`)
+          [() => bingSearch(text), () => duckSearch(`${text} site:gov.cn`)],
+          [() => sogouSearch(`${text} 政府 高校`), () => bingSearch(text)],
+          [() => sogouSearch(`${text} 故宫博物院`), () => duckSearch(text)]
         ];
-    for (let i = 0; i < searchTasks.length; i += 1) {
+    const tasks = engineSets[fallbackKind % engineSets.length];
+    for (let i = 0; i < tasks.length; i += 1) {
       try {
-        const results = await searchTasks[i]();
-        all.push(...results);
+        found.push(...await tasks[i]());
       } catch { /* 单个搜索引擎失败不影响整体 */ }
-      if (i < searchTasks.length - 1) await sleep(SEARCH_THROTTLE_MS);
+      if (i < tasks.length - 1) await sleep(SEARCH_THROTTLE_MS);
     }
+  }
+  return found;
+}
+
+export async function searchWebSources(query, options = {}) {
+  // 支持单个查询或多个查询（fan-out）
+  const rawList = Array.isArray(query)
+    ? query.filter(Boolean)
+    : [...(Array.isArray(options.queries) ? options.queries.filter(Boolean) : []), query].filter(Boolean);
+  if (!rawList.length) return [];
+
+  const textList = [...new Set(rawList.map((q) => evidenceQuery(q)).filter(Boolean))];
+  if (!textList.length) return [];
+  const primaryText = textList[0];
+  // 合并所有查询的关键词用于评分
+  const terms = [...new Set(textList.flatMap((t) => t.split(/\s+/u)).filter(Boolean))];
+  const peopleTerms = ["吴京", "那英", "郎朗", "郎平", "关晓彤", "关之琳", "金巧巧"].filter((name) => terms.includes(name));
+  const serperKey = options.serperApiKey || options.searchApiKey || process.env.SERPER_API_KEY || "";
+
+  const all = [];
+  for (let i = 0; i < textList.length; i += 1) {
+    const results = await searchOneText(textList[i], serperKey, i);
+    all.push(...results);
+    if (i < textList.length - 1) await sleep(serperKey ? 300 : SEARCH_THROTTLE_MS);
   }
 
   const seen = new Set();
@@ -403,7 +418,7 @@ export async function searchWebSources(query, options = {}) {
   const top = trusted.slice(0, 3);
   for (let i = 0; i < Math.min(top.length, 2); i += 1) {
     try {
-      const preview = await fetchSourcePreview({ url: top[i].url, query: text, excerpt: top[i].excerpt || "" });
+      const preview = await fetchSourcePreview({ url: top[i].url, query: primaryText, excerpt: top[i].excerpt || "" });
       if (preview?.matched && preview.highlight) {
         top[i].evidence = {
           title: preview.title,

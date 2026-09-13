@@ -116,7 +116,8 @@ async function api(request, response, url) {
     return sendJson(response, 200, {
       sources: await searchWebSources(payload.query, {
         serperApiKey: searchApiKey,
-        searchProvider: payload.searchProvider
+        searchProvider: payload.searchProvider,
+        queries: Array.isArray(payload.queries) ? payload.queries : []
       })
     });
   }

@@ -537,6 +537,22 @@ button { cursor: pointer; }
 .decision-actions .accept { border-color: var(--violet); color: white; background: var(--violet); }
 .decision-actions .selected-decision { box-shadow: 0 0 0 3px rgba(108,92,231,.15); font-weight: 800; }
 
+.ai-verify-button { padding: 5px 8px; border: 1px solid #d9c98a; border-radius: 7px; color: #8a6d1f; background: #fbf5e3; font-size: 10px; font-weight: 750; cursor: pointer; }
+.ai-verify-button:hover { border-color: #c4a85a; background: #f5ead0; }
+.ai-verify-button:disabled { opacity: .6; cursor: wait; }
+
+.evidence-verdict { margin: 8px 0 2px; padding: 9px 11px; border-radius: 9px; border: 1px solid; font-size: 11px; }
+.evidence-verdict .verdict-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 3px; }
+.evidence-verdict .verdict-head b { font-size: 11.5px; }
+.evidence-verdict p { margin: 0; line-height: 1.55; }
+.verdict-clear { border: none; background: transparent; cursor: pointer; font-size: 13px; line-height: 1; opacity: .5; }
+.verdict-clear:hover { opacity: 1; }
+.verdict-supported { background: #eef6ec; border-color: #b9d8ad; color: #3c6b2e; }
+.verdict-refuted { background: #f8eeec; border-color: #dfb3a7; color: #96402f; }
+.verdict-nei { background: #f3f1ec; border-color: #d4cdbd; color: #6b6354; }
+.verdict-correct { margin-top: 6px; padding-top: 6px; border-top: 1px dashed rgba(0,0,0,.12); line-height: 1.55; }
+.verdict-correct span { display: block; font-size: 10px; font-weight: 800; opacity: .7; margin-bottom: 2px; }
+
 .source-note { display: grid; grid-template-columns: auto auto 1fr; align-items: center; gap: 9px 13px; margin: 17px 21px 0; padding: 12px 14px; border: 1px solid #f0dcae; border-radius: 10px; background: #fffaf0; }
 .source-note span { color: #9b650e; font-size: 10px; font-weight: 800; }
 .source-note b { color: #675535; font-size: 11px; }

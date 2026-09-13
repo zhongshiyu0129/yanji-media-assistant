@@ -381,6 +381,23 @@ function annotatedManuscript(text, facts, risks) {
   return html || '<span class="annotated-empty">请先组合并保存完整稿件。</span>';
 }
 
+function verdictBadge(item) {
+  if (!item.verdict) return "";
+  const map = {
+    supported: { cls: "verdict-supported", icon: "✓", label: "证据支持" },
+    refuted: { cls: "verdict-refuted", icon: "✕", label: "证据反驳" },
+    nei: { cls: "verdict-nei", icon: "?", label: "证据不足" }
+  };
+  const meta = map[item.verdict];
+  if (!meta) return "";
+  const correct = item.verdict === "refuted" && item.correctStatement
+    ? `<div class="verdict-correct"><span>有据可查的说法</span>${escapeHtml(item.correctStatement)}</div>` : "";
+  return `<div class="evidence-verdict ${meta.cls}">
+    <div class="verdict-head"><b>${meta.icon} ${meta.label}</b><button class="verdict-clear" data-verdict-clear data-id="${escapeHtml(item.id)}" title="清除该判断">×</button></div>
+    <p>${escapeHtml(item.verdictReasoning || "")}</p>${correct}
+  </div>`;
+}
+
 function reviewStage() {
   const manuscript = isMeaningful(state.project.files.voiceover.content) ? stripHeading(state.project.files.voiceover.content) : "";
   const facts = state.workspace.factChecks || [];
@@ -390,9 +407,9 @@ function reviewStage() {
   const factContent = facts.length ? facts.map((item, index) => `
     <article class="review-card ${item.status !== "pending" ? "resolved" : ""}" data-review-card="fact:${escapeHtml(item.id)}">
       <div class="review-top"><div><span class="review-index">F${index + 1}</span><span class="level-badge ${item.level}">${item.level === "must" ? "必须修改" : item.level === "recommended" ? "建议修改" : "可以保留"}</span></div><div class="confidence ${confidenceClass(item.confidence)}"><span>置信度</span><b>${item.confidence}%</b><i><u style="width:${item.confidence}%"></u></i></div></div>
-      <blockquote>${escapeHtml(item.claim)}</blockquote><p class="fact-summary">${escapeHtml(item.summary)}</p>
+      <blockquote>${escapeHtml(item.claim)}</blockquote><p class="fact-summary">${escapeHtml(item.summary)}</p>${verdictBadge(item)}
       <div class="suggestion"><div><span>建议改成</span><small>选中文字即可让 AI 修改</small></div><textarea data-suggestion-edit="fact" data-id="${escapeHtml(item.id)}" aria-label="编辑事实核验建议">${escapeHtml(item.suggestion)}</textarea></div>
-      <footer><div class="source-query-row"><label>检索词</label><input type="text" class="source-query-input" data-source-query data-id="${escapeHtml(item.id)}" value="${escapeHtml(item.sourceQuery || "")}" placeholder="AI 提炼的关键词，可手动修改后重搜" spellcheck="false"><button class="source-query-search" data-source-search data-id="${escapeHtml(item.id)}" title="用当前检索词搜索权威来源">⌕ 搜索</button></div><div class="source-footer-row"><div class="source-links">${item.sources?.length ? item.sources.map((source, sourceIndex) => `<button data-source-preview data-kind="fact" data-id="${escapeHtml(item.id)}" data-source-index="${sourceIndex}" data-url="${escapeHtml(source.url)}" data-title="${escapeHtml(source.title)}" data-query="${escapeHtml(item.claim)}" data-excerpt="${escapeHtml(source.excerpt || "")}">▣ ${source.evidence ? "已缓存证据" : "预览并定位"}：${escapeHtml(source.title)}</button>`).join("") : `<span class="source-empty-hint">暂无可靠来源，修改检索词后点搜索，或考虑删除这条断言</span>`}</div><div class="decision-actions"><button class="${item.status === "pending" ? "selected-decision" : ""}" data-review="fact" data-id="${item.id}" data-status="pending">重新考虑</button><button class="${item.status === "kept" ? "selected-decision" : ""}" data-review="fact" data-id="${item.id}" data-status="kept">仍然保留</button><button class="accept ${item.status === "accepted" ? "selected-decision" : ""}" data-review="fact" data-id="${item.id}" data-status="accepted">接受并替换</button></div></div></footer>
+      <footer><div class="source-query-row"><label>检索词</label><input type="text" class="source-query-input" data-source-query data-id="${escapeHtml(item.id)}" value="${escapeHtml(item.sourceQuery || "")}" placeholder="AI 提炼的关键词，可手动修改后重搜" spellcheck="false"><button class="source-query-search" data-source-search data-id="${escapeHtml(item.id)}" title="用当前检索词搜索权威来源">⌕ 搜索</button></div><div class="source-footer-row"><div class="source-links">${item.sources?.length ? item.sources.map((source, sourceIndex) => `<button data-source-preview data-kind="fact" data-id="${escapeHtml(item.id)}" data-source-index="${sourceIndex}" data-url="${escapeHtml(source.url)}" data-title="${escapeHtml(source.title)}" data-query="${escapeHtml(item.claim)}" data-excerpt="${escapeHtml(source.excerpt || "")}">▣ ${source.evidence ? "已缓存证据" : "预览并定位"}：${escapeHtml(source.title)}</button>`).join("") + `<button class="ai-verify-button" data-ai-verify data-id="${escapeHtml(item.id)}" title="让 AI 阅读来源正文，判断证据是否支持该断言">⚖ ${item.verdict ? "重新验证" : "AI 验证证据"}</button>` : `<span class="source-empty-hint">暂无可靠来源，修改检索词后点搜索，或考虑删除这条断言</span>`}</div><div class="decision-actions"><button class="${item.status === "pending" ? "selected-decision" : ""}" data-review="fact" data-id="${item.id}" data-status="pending">重新考虑</button><button class="${item.status === "kept" ? "selected-decision" : ""}" data-review="fact" data-id="${item.id}" data-status="kept">仍然保留</button><button class="accept ${item.status === "accepted" ? "selected-decision" : ""}" data-review="fact" data-id="${item.id}" data-status="accepted">接受并替换</button></div></div></footer>
     </article>`).join("") : '<div class="empty-list">点击右上角“检查整合稿”后，事实判断会显示在这里。</div>';
   const riskContent = risks.length ? risks.map((item, index) => `
     <article class="compliance-item ${item.status !== "pending" ? "resolved" : ""}" data-review-card="compliance:${escapeHtml(item.id)}"><div class="risk-marker ${item.severity}">R${index + 1}</div><div class="risk-content"><div><span>${escapeHtml(item.category)}</span><em>${item.severity === "high" ? "高风险" : "中风险"}</em></div><p class="replacement"><del>${escapeHtml(item.original)}</del><i>→</i><span>建议表达 · 选中文字可让 AI 修改</span></p><div class="risk-suggestion"><textarea data-suggestion-edit="compliance" data-id="${escapeHtml(item.id)}" aria-label="编辑风险表达建议">${escapeHtml(item.suggestion)}</textarea></div><small>${escapeHtml(item.reason)}</small></div><div class="decision-actions"><button class="${item.status === "pending" ? "selected-decision" : ""}" data-review="compliance" data-id="${item.id}" data-status="pending">重新考虑</button><button class="${item.status === "kept" ? "selected-decision" : ""}" data-review="compliance" data-id="${item.id}" data-status="kept">不改</button><button class="accept ${item.status === "accepted" ? "selected-decision" : ""}" data-review="compliance" data-id="${item.id}" data-status="accepted">接受并替换</button></div></article>`).join("") : '<div class="empty-list">完成整合稿后，风险表达会结合全文显示在这里。</div>';
@@ -896,7 +913,10 @@ async function searchFactSources(button) {
   button.disabled = true;
   button.textContent = "正在检索政府、高校和博物馆来源…";
   try {
-    const data = await request("/api/source-search", { method: "POST", body: JSON.stringify({ query }) });
+    const data = await request("/api/source-search", {
+      method: "POST",
+      body: JSON.stringify({ query, queries: Array.isArray(item.searchQueries) ? item.searchQueries : [] })
+    });
     item.sources = data.sources || [];
     await saveWorkspace();
     renderStage();
@@ -918,7 +938,10 @@ async function searchAllFactSources(button) {
       const query = (item.sourceQuery || `${item.claim} ${item.summary || ""}`).trim();
       button.textContent = `正在检索 ${cursor + 1}/${pending.length}：${item.claim?.slice(0, 24)}…`;
       try {
-        const data = await request("/api/source-search", { method: "POST", body: JSON.stringify({ query }) });
+        const data = await request("/api/source-search", {
+          method: "POST",
+          body: JSON.stringify({ query, queries: Array.isArray(item.searchQueries) ? item.searchQueries : [] })
+        });
         const sources = data.sources || [];
         if (sources.length) {
           state.workspace.factChecks[index].sources = sources;
@@ -940,7 +963,35 @@ async function searchAllFactSources(button) {
   }
 }
 
-function sessionKey() { return sessionStorage.getItem(AI_KEY_STORAGE) || ""; }
+async function verifyFactEvidence(button) {
+  const item = state.workspace.factChecks?.find((entry) => entry.id === button.dataset.id);
+  if (!item) return;
+  if (!item.sources?.length) return showToast("请先搜索来源，再让 AI 验证证据");
+  button.disabled = true;
+  const originalText = button.textContent;
+  button.textContent = "AI 正在阅读来源正文…";
+  try {
+    const data = await request("/api/ai/run", {
+      method: "POST",
+      body: JSON.stringify({
+        provider: selectedProvider(), stage: "verify", model: selectedModel(),
+        payload: { claim: item.claim, sources: item.sources, settings: state.workspace.settings }
+      })
+    });
+    item.verdict = data.result.verdict;
+    item.verdictReasoning = data.result.reasoning;
+    item.correctStatement = data.result.correctStatement || "";
+    await saveWorkspace();
+    renderStage();
+    const label = { supported: "证据支持该说法", refuted: "证据与该说法矛盾", nei: "证据不足，无法判断" };
+    showToast(label[item.verdict] || "验证完成");
+  } catch (error) {
+    showToast(error.message);
+    button.disabled = false;
+    button.textContent = originalText;
+  }
+}
+
 function searchKey() { return sessionStorage.getItem(SEARCH_KEY_STORAGE) || ""; }
 function selectedProvider() { return sessionStorage.getItem(AI_PROVIDER_STORAGE) || state.ai.provider || "deepseek"; }
 function selectedModel() { return sessionStorage.getItem(AI_MODEL_STORAGE) || state.ai.defaultModel || "deepseek-flash"; }
@@ -1278,6 +1329,17 @@ els.stageContent.addEventListener("click", async (event) => {
   if (memoryRemove) return removeMemoryPreference(Number(memoryRemove.dataset.memoryRemove));
   const sourceSearch = event.target.closest("[data-source-search]");
   if (sourceSearch) return searchFactSources(sourceSearch);
+  const aiVerify = event.target.closest("[data-ai-verify]");
+  if (aiVerify) return verifyFactEvidence(aiVerify);
+  const verdictClear = event.target.closest("[data-verdict-clear]");
+  if (verdictClear) {
+    const target = state.workspace.factChecks?.find((entry) => entry.id === verdictClear.dataset.id);
+    if (target) {
+      delete target.verdict; delete target.verdictReasoning; delete target.correctStatement;
+      await saveWorkspace(); renderStage();
+    }
+    return;
+  }
   const sourcePreview = event.target.closest("[data-source-preview]");
   if (sourcePreview) return openSourcePreview(sourcePreview);
   const reviewChat = event.target.closest("[data-review-chat]");
