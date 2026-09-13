@@ -112,12 +112,19 @@ async function api(request, response, url) {
   }
   if (request.method === "POST" && url.pathname === "/api/source-search") {
     const payload = await bodyJson(request);
-    return sendJson(response, 200, { sources: await searchWebSources(payload.query) });
+    const searchApiKey = request.headers["x-search-api-key"] || payload.searchApiKey;
+    return sendJson(response, 200, {
+      sources: await searchWebSources(payload.query, {
+        serperApiKey: searchApiKey,
+        searchProvider: payload.searchProvider
+      })
+    });
   }
   if (request.method === "POST" && url.pathname === "/api/ai/run") {
     const payload = await bodyJson(request);
     const result = await ai.run({
       apiKey: request.headers["x-ai-api-key"] || request.headers["x-openai-api-key"],
+      searchApiKey: request.headers["x-search-api-key"] || payload.searchApiKey,
       provider: payload.provider,
       stage: payload.stage,
       model: payload.model,

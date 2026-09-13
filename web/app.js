@@ -24,6 +24,7 @@ let optionSaveTimer;
 const AI_KEY_STORAGE = "yanji-openai-api-key";
 const AI_MODEL_STORAGE = "yanji-openai-model";
 const AI_PROVIDER_STORAGE = "yanji-ai-provider";
+const SEARCH_KEY_STORAGE = "yanji-search-api-key";
 
 const $ = (selector, root = document) => root.querySelector(selector);
 const $$ = (selector, root = document) => [...root.querySelectorAll(selector)];
@@ -35,6 +36,7 @@ const els = {
   editorDialog: $("#editorDialog"), resultEditor: $("#resultEditor"), toast: $("#toast"),
   generateButton: $("#generateButton"), aiSettingsDialog: $("#aiSettingsDialog"),
   aiSettingsForm: $("#aiSettingsForm"), apiKeyInput: $("#apiKeyInput"), modelInput: $("#modelInput"),
+  searchKeyInput: $("#searchKeyInput"),
   providerInput: $("#providerInput"),
   projectManageDialog: $("#projectManageDialog"), projectManageForm: $("#projectManageForm"),
   manageProjectId: $("#manageProjectId"), manageTitle: $("#manageTitle"), manageDomain: $("#manageDomain"), manageTags: $("#manageTags"),
@@ -69,7 +71,10 @@ const processFiles = [
 ];
 
 async function request(url, options = {}) {
-  const response = await fetch(url, { headers: { "Content-Type": "application/json" }, ...options });
+  const baseHeaders = { "Content-Type": "application/json" };
+  if (sessionKey()) baseHeaders["X-AI-Api-Key"] = sessionKey();
+  if (searchKey()) baseHeaders["X-Search-Api-Key"] = searchKey();
+  const response = await fetch(url, { headers: baseHeaders, ...options });
   const data = await response.json();
   if (!response.ok) throw new Error(data.error || "请求失败");
   return data;
@@ -539,7 +544,11 @@ async function runSelectionEdit() {
   try {
     const data = await request("/api/ai/run", {
       method: "POST",
-      headers: { "Content-Type": "application/json", ...(sessionKey() ? { "X-AI-Api-Key": sessionKey() } : {}) },
+      headers: {
+        "Content-Type": "application/json",
+        ...(sessionKey() ? { "X-AI-Api-Key": sessionKey() } : {}),
+        ...(searchKey() ? { "X-Search-Api-Key": searchKey() } : {})
+      },
       body: JSON.stringify({ provider: selectedProvider(), stage: "selection", model: selectedModel(), payload: { ...currentAIPayload(), ...selection, editor: undefined, message: instruction } })
     });
     const replacement = String(data.result.replacement || "");
@@ -794,7 +803,11 @@ async function learnFromProject() {
   try {
     const data = await request("/api/ai/run", {
       method: "POST",
-      headers: { "Content-Type": "application/json", ...(sessionKey() ? { "X-AI-Api-Key": sessionKey() } : {}) },
+      headers: {
+        "Content-Type": "application/json",
+        ...(sessionKey() ? { "X-AI-Api-Key": sessionKey() } : {}),
+        ...(searchKey() ? { "X-Search-Api-Key": searchKey() } : {})
+      },
       body: JSON.stringify({ provider: selectedProvider(), stage: "learn", model: selectedModel(), payload })
     });
     state.workspace.learningCandidates = (data.result.preferences || []).map((text) => ({ text, selected: true }));
@@ -928,6 +941,7 @@ async function searchAllFactSources(button) {
 }
 
 function sessionKey() { return sessionStorage.getItem(AI_KEY_STORAGE) || ""; }
+function searchKey() { return sessionStorage.getItem(SEARCH_KEY_STORAGE) || ""; }
 function selectedProvider() { return sessionStorage.getItem(AI_PROVIDER_STORAGE) || state.ai.provider || "deepseek"; }
 function selectedModel() { return sessionStorage.getItem(AI_MODEL_STORAGE) || state.ai.defaultModel || "deepseek-flash"; }
 function hasAIKey() { return state.ai.configured || Boolean(sessionKey()); }
@@ -941,6 +955,7 @@ function updateConnectionStatus() {
   els.apiKeyInput.placeholder = state.ai.configured ? "已由本机环境变量提供，可留空" : "sk-…";
   els.providerInput.value = selectedProvider();
   els.modelInput.value = selectedModel();
+  els.searchKeyInput.value = searchKey();
 }
 
 function openAISettings() {
@@ -1020,7 +1035,11 @@ async function sendChat(message) {
     } : { ...currentAIPayload(), message: text, currentStage: state.activeStage, conversation: state.workspace.conversation.slice(-20) };
     const data = await request("/api/ai/run", {
       method: "POST",
-      headers: { "Content-Type": "application/json", ...(sessionKey() ? { "X-AI-Api-Key": sessionKey() } : {}) },
+      headers: {
+        "Content-Type": "application/json",
+        ...(sessionKey() ? { "X-AI-Api-Key": sessionKey() } : {}),
+        ...(searchKey() ? { "X-Search-Api-Key": searchKey() } : {})
+      },
       body: JSON.stringify({ provider: selectedProvider(), stage: reviewItem ? "suggestion" : "chat", model: selectedModel(), payload })
     });
     if (reviewItem) {
@@ -1059,7 +1078,11 @@ async function generateProjectMetadata(sourceText) {
     });
     const data = await request("/api/ai/run", {
       method: "POST",
-      headers: { "Content-Type": "application/json", ...(sessionKey() ? { "X-AI-Api-Key": sessionKey() } : {}) },
+      headers: {
+        "Content-Type": "application/json",
+        ...(sessionKey() ? { "X-AI-Api-Key": sessionKey() } : {}),
+        ...(searchKey() ? { "X-Search-Api-Key": searchKey() } : {})
+      },
       body: JSON.stringify({
         provider: selectedProvider(), stage: "metadata", model: selectedModel(),
         payload: { source: sourceText, settings: workspace.settings }
@@ -1195,7 +1218,11 @@ async function runAIStage({ stageOverride, bypassPrompt = false } = {}) {
       } : payload;
       const data = await request("/api/ai/run", {
         method: "POST",
-        headers: { "Content-Type": "application/json", ...(sessionKey() ? { "X-AI-Api-Key": sessionKey() } : {}) },
+        headers: {
+        "Content-Type": "application/json",
+        ...(sessionKey() ? { "X-AI-Api-Key": sessionKey() } : {}),
+        ...(searchKey() ? { "X-Search-Api-Key": searchKey() } : {})
+      },
         body: JSON.stringify({ provider: selectedProvider(), stage, model: selectedModel(), payload: stagePayload })
       });
       await applyAIResult(stage, data.result);
@@ -1430,7 +1457,9 @@ $("#clearSpecialButton").addEventListener("click", () => {
 });
 $("#clearAIKeyButton").addEventListener("click", () => {
   sessionStorage.removeItem(AI_KEY_STORAGE);
+  sessionStorage.removeItem(SEARCH_KEY_STORAGE);
   els.apiKeyInput.value = "";
+  els.searchKeyInput.value = "";
   updateConnectionStatus();
   showToast("浏览器会话中的密钥已清除");
 });
@@ -1439,14 +1468,17 @@ els.aiSettingsForm.addEventListener("submit", (event) => {
   if (event.submitter?.value === "cancel") return;
   event.preventDefault();
   const key = els.apiKeyInput.value.trim();
+  const sKey = els.searchKeyInput.value.trim();
   const provider = els.providerInput.value;
   const model = els.modelInput.value.trim() || state.ai.defaultModel;
   if (key) sessionStorage.setItem(AI_KEY_STORAGE, key);
+  if (sKey) sessionStorage.setItem(SEARCH_KEY_STORAGE, sKey);
+  else sessionStorage.removeItem(SEARCH_KEY_STORAGE);
   sessionStorage.setItem(AI_PROVIDER_STORAGE, provider);
   sessionStorage.setItem(AI_MODEL_STORAGE, model);
-  if (!hasAIKey()) return showToast("请填写 OpenAI API Key");
+  if (!hasAIKey()) return showToast("请填写 AI API Key");
   els.aiSettingsDialog.close();
-  showToast("AI 设置已保存，可以点击右上角生成");
+  showToast("AI 设置已保存");
 });
 
 els.providerInput.addEventListener("change", () => {

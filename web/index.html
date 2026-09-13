@@ -127,8 +127,9 @@
         <label>AI 服务<select id="providerInput" name="provider"><option value="deepseek">DeepSeek</option><option value="openai">OpenAI</option></select></label>
         <label>API Key<input id="apiKeyInput" name="apiKey" type="password" autocomplete="off" placeholder="sk-…" /></label>
         <label>模型<input id="modelInput" name="model" value="gpt-5.4-mini" autocomplete="off" /></label>
+        <label>来源搜索 Key（可选）<input id="searchKeyInput" name="searchKey" type="password" autocomplete="off" placeholder="Serper API Key，留空则用免费搜索" /></label>
         <div class="connection-note"><i id="connectionDot"></i><span id="connectionText">正在检查连接方式…</span></div>
-        <p class="privacy-note">使用时，当前环节的稿件会发送给所选 AI 服务。DeepSeek 负责整理、改写和包装，但不自带实时网页搜索；切换 OpenAI 后，事实核验可启用联网来源搜索。</p>
+        <p class="privacy-note">使用时，当前环节的稿件会发送给所选 AI 服务。来源搜索 Key 用于稳定检索事实证据，推荐到 serper.dev 免费注册（2500次额度）；不填则使用免费网页搜索，但可能不稳定。</p>
         <div class="dialog-actions"><button type="button" class="danger-text" id="clearAIKeyButton">清除密钥</button><button value="cancel" class="ghost-button">取消</button><button value="default" class="generate-button">保存并试用</button></div>
       </form>
     </dialog>

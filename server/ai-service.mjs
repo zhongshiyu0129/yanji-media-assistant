@@ -261,7 +261,7 @@ export function createAIService(root) {
     };
   }
 
-  async function run({ apiKey, provider: requestedProvider, stage, model, payload }) {
+  async function run({ apiKey, searchApiKey, provider: requestedProvider, stage, model, payload }) {
     const provider = Object.hasOwn(PROVIDERS, requestedProvider) ? requestedProvider : configuredProvider();
     const config = PROVIDERS[provider];
     const key = apiKey || process.env[config.envKey];
@@ -321,7 +321,10 @@ export function createAIService(root) {
       for (let i = 0; i < pending.length; i += 1) {
         const item = pending[i];
         try {
-          item.sources = await searchWebSources(item.sourceQuery || `${item.claim || ""} ${item.summary || ""}`);
+          item.sources = await searchWebSources(
+            item.sourceQuery || `${item.claim || ""} ${item.summary || ""}`,
+            { serperApiKey: searchApiKey }
+          );
         } catch {
           item.sources = [];
         }

@@ -32,6 +32,13 @@ DEEPSEEK_API_KEY="你的密钥" DEEPSEEK_MODEL="deepseek-flash" npm start
 
 项目也会自动读取被 Git 忽略的 `.env.local`。当前 DeepSeek 默认模型为 `deepseek-flash`，也可以在网页设置中修改。每次只运行当前选中的环节，便于检查结果并控制调用成本。
 
+### 来源搜索配置（可选但推荐）
+
+事实核验环节需要联网检索证据来源。有两种方式：
+
+1. **稳定搜索 API（推荐）**：到 [serper.dev](https://serper.dev) 免费注册（Google/GitHub 账号即可，无需信用卡），获得 2500 次免费查询额度。把 Key 填到网页设置的"来源搜索 Key"，或设置环境变量 `SERPER_API_KEY`。
+2. **免费网页搜索（默认 fallback）**：不配置 Key 时，系统会通过必应/DuckDuckGo/搜狗的公开网页检索，无需注册但可能被搜索引擎限流，结果不够稳定。
+
 ## 项目特点
 
 - **项目制管理**：每条稿件对应 `projects/<project-slug>/` 下的独立工作区，输入、过程、最终稿和日志互不混杂。

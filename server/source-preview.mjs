@@ -121,6 +121,29 @@ async function bingSearch(query) {
   finally { clearTimeout(timer); }
 }
 
+async function serperSearch(query, apiKey) {
+  if (!apiKey) return [];
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 15_000);
+  try {
+    const response = await fetch("https://google.serper.dev/search", {
+      method: "POST",
+      signal: controller.signal,
+      headers: { "X-API-KEY": apiKey, "Content-Type": "application/json" },
+      body: JSON.stringify({ q: query, gl: "cn", hl: "zh-cn", num: 10 })
+    });
+    if (!response.ok) return [];
+    const data = await response.json();
+    if (!Array.isArray(data.organic)) return [];
+    return data.organic.slice(0, 8).map((item) => ({
+      title: item.title || "",
+      url: item.link || "",
+      excerpt: item.snippet || ""
+    })).filter((item) => /^https?:\/\//i.test(item.url));
+  } catch { return []; }
+  finally { clearTimeout(timer); }
+}
+
 export function evidenceQuery(value) {
   const compact = String(value || "").replace(/\s+/g, " ").trim();
   // 领域核心词：原文直接出现则优先提取
@@ -318,25 +341,41 @@ function scoreSource(item, terms, peopleTerms) {
   return score;
 }
 
-export async function searchWebSources(query) {
+export async function searchWebSources(query, options = {}) {
   const text = evidenceQuery(query);
   if (!text) return [];
   const terms = text.split(/\s+/u).filter(Boolean);
   const peopleTerms = ["吴京", "那英", "郎朗", "郎平", "关晓彤", "关之琳", "金巧巧"].filter((name) => terms.includes(name));
-  const searchTasks = [
-    () => bingSearch(text),
-    () => duckSearch(`${text} site:gov.cn`),
-    () => sogouSearch(`${text} 故宫博物院`),
-    () => sogouSearch(`${text} 政府 高校`)
-  ];
+  const serperKey = options.serperApiKey || options.searchApiKey || process.env.SERPER_API_KEY || "";
   const all = [];
-  for (let i = 0; i < searchTasks.length; i += 1) {
-    try {
-      const results = await searchTasks[i]();
-      all.push(...results);
-    } catch { /* 单个搜索引擎失败不影响整体 */ }
-    if (i < searchTasks.length - 1) await sleep(SEARCH_THROTTLE_MS);
+
+  // 第一优先：Serper API（稳定的Google搜索结果）
+  if (serperKey) {
+    const serperResults = await serperSearch(text, serperKey);
+    all.push(...serperResults);
   }
+
+  // Fallback：公开搜索引擎HTML抓取（免费但不稳定）
+  // 如果Serper已经返回了足够多的结果，就不再跑HTML抓取
+  const needFallback = !serperKey || all.length < 4;
+  if (needFallback) {
+    const searchTasks = serperKey
+      ? [() => bingSearch(text)]
+      : [
+          () => bingSearch(text),
+          () => duckSearch(`${text} site:gov.cn`),
+          () => sogouSearch(`${text} 故宫博物院`),
+          () => sogouSearch(`${text} 政府 高校`)
+        ];
+    for (let i = 0; i < searchTasks.length; i += 1) {
+      try {
+        const results = await searchTasks[i]();
+        all.push(...results);
+      } catch { /* 单个搜索引擎失败不影响整体 */ }
+      if (i < searchTasks.length - 1) await sleep(SEARCH_THROTTLE_MS);
+    }
+  }
+
   const seen = new Set();
   const trusted = [];
   for (const item of all) {
@@ -346,10 +385,18 @@ export async function searchWebSources(query) {
       const host = new URL(item.url).hostname.toLowerCase();
       const isAuthority = host.endsWith(".gov.cn") || host.endsWith(".edu.cn") || /museum|dpm\.org\.cn|cssn\.cn|people\.com\.cn|xinhuanet\.com|gmw\.cn|china\.com\.cn|chinadaily\.com\.cn/.test(host);
       const isReference = /baike\.baidu\.com|zh\.wikipedia\.org|baike\.com/.test(host);
-      if (!isAuthority && !isReference) continue;
+      // Serper模式下放宽来源限制，保留所有结果但标注类型；HTML模式下只保留可信来源
+      if (!serperKey && !isAuthority && !isReference) continue;
       const score = scoreSource(item, terms, peopleTerms);
-      if (score < MIN_RELEVANCE_SCORE) continue;
-      trusted.push({ ...item, relevanceScore: score, sourceType: isAuthority ? "authority" : "reference" });
+      // Serper模式下，如果标题完全没匹配但来源是权威网站，给一个基础分
+      let finalScore = score;
+      if (serperKey && score === 0 && (isAuthority || isReference)) finalScore = 3;
+      if (finalScore < MIN_RELEVANCE_SCORE && !serperKey) continue;
+      trusted.push({
+        ...item,
+        relevanceScore: finalScore,
+        sourceType: isAuthority ? "authority" : isReference ? "reference" : "general"
+      });
     } catch { /* ignore invalid items */ }
   }
   trusted.sort((a, b) => b.relevanceScore - a.relevanceScore);
