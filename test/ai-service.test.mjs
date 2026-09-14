@@ -43,7 +43,8 @@ test("AI service uses DeepSeek JSON Output", async (context) => {
     payload: { source: "这是一段需要整理的测试口播稿，长度足够完成接口测试。" }
   });
 
-  assert.equal(response.result.corrected, "整理后的口播稿");
+  assert.equal(response.result.corrected, "　　整理后的口播稿");
+  assert.doesNotMatch(response.result.corrected, /\n\n/u);
   assert.equal(response.usage.total_tokens, 123);
   assert.equal(requestBody.response_format.type, "json_object");
   assert.equal(requestBody.thinking.type, "disabled");

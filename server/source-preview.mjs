@@ -326,7 +326,7 @@ function scoreSource(item, terms, peopleTerms) {
   if (peopleTerms.length >= 2) {
     const evidence = title + excerpt;
     const peopleHits = peopleTerms.filter((name) => evidence.includes(name)).length;
-    if (peopleHits < peopleTerms.length) return 0;
+    if (peopleHits === 0) return 0;
     score += peopleHits * 2;
   }
   if (titleHits >= 2) score += 3;
@@ -373,21 +373,18 @@ export async function searchWebSources(query, options = {}) {
   // 支持单个查询或多个查询（fan-out）
   const rawList = Array.isArray(query)
     ? query.filter(Boolean)
-    : [...(Array.isArray(options.queries) ? options.queries.filter(Boolean) : []), query].filter(Boolean);
+    : [query, ...(Array.isArray(options.queries) ? options.queries.filter(Boolean) : [])].filter(Boolean);
   if (!rawList.length) return [];
 
   const textList = [...new Set(rawList.map((q) => evidenceQuery(q)).filter(Boolean))];
   if (!textList.length) return [];
   const primaryText = textList[0];
-  // 合并所有查询的关键词用于评分
-  const terms = [...new Set(textList.flatMap((t) => t.split(/\s+/u)).filter(Boolean))];
-  const peopleTerms = ["吴京", "那英", "郎朗", "郎平", "关晓彤", "关之琳", "金巧巧"].filter((name) => terms.includes(name));
   const serperKey = options.serperApiKey || options.searchApiKey || process.env.SERPER_API_KEY || "";
 
   const all = [];
   for (let i = 0; i < textList.length; i += 1) {
     const results = await searchOneText(textList[i], serperKey, i);
-    all.push(...results);
+    all.push(...results.map((item) => ({ ...item, searchText: textList[i] })));
     if (i < textList.length - 1) await sleep(serperKey ? 300 : SEARCH_THROTTLE_MS);
   }
 
@@ -402,15 +399,19 @@ export async function searchWebSources(query, options = {}) {
       const isReference = /baike\.baidu\.com|zh\.wikipedia\.org|baike\.com/.test(host);
       // Serper模式下放宽来源限制，保留所有结果但标注类型；HTML模式下只保留可信来源
       if (!serperKey && !isAuthority && !isReference) continue;
+      const terms = [...new Set(String(item.searchText || primaryText).split(/\s+/u).filter(Boolean))];
+      const peopleTerms = ["吴京", "那英", "郎朗", "郎平", "关晓彤", "关之琳", "金巧巧"].filter((name) => terms.includes(name));
       const score = scoreSource(item, terms, peopleTerms);
       // Serper模式下，如果标题完全没匹配但来源是权威网站，给一个基础分
       let finalScore = score;
       if (serperKey && score === 0 && (isAuthority || isReference)) finalScore = 3;
       if (finalScore < MIN_RELEVANCE_SCORE && !serperKey) continue;
+      const { searchText, ...source } = item;
       trusted.push({
-        ...item,
+        ...source,
         relevanceScore: finalScore,
-        sourceType: isAuthority ? "authority" : isReference ? "reference" : "general"
+        sourceType: isAuthority ? "authority" : isReference ? "reference" : "general",
+        matchedQuery: searchText
       });
     } catch { /* ignore invalid items */ }
   }
@@ -418,7 +419,7 @@ export async function searchWebSources(query, options = {}) {
   const top = trusted.slice(0, 3);
   for (let i = 0; i < Math.min(top.length, 2); i += 1) {
     try {
-      const preview = await fetchSourcePreview({ url: top[i].url, query: primaryText, excerpt: top[i].excerpt || "" });
+      const preview = await fetchSourcePreview({ url: top[i].url, query: top[i].matchedQuery || primaryText, excerpt: top[i].excerpt || "" });
       if (preview?.matched && preview.highlight) {
         top[i].evidence = {
           title: preview.title,

@@ -15,11 +15,14 @@ const state = {
   selectionEdit: null,
   selectionRunning: false,
   chatRunning: false,
-  ai: { configured: false, provider: "deepseek", providerLabel: "DeepSeek", defaultModel: "deepseek-flash", running: false }
+  sourceSearches: {},
+  ai: { configured: false, provider: "deepseek", providerLabel: "DeepSeek", defaultModel: "deepseek-flash", running: false, progress: null }
 };
 
 let metadataTimer;
 let optionSaveTimer;
+let aiProgressTimer;
+let sourceSearchTimer;
 
 const AI_KEY_STORAGE = "yanji-openai-api-key";
 const AI_MODEL_STORAGE = "yanji-openai-model";
@@ -106,6 +109,26 @@ function timeAgo(value) {
 }
 
 function textLength(value = "") { return String(value).replace(/\s/g, "").length; }
+
+function formatCorrectedDraft(value = "") {
+  const text = String(value).replace(/\r/g, "").replace(/[ \t\u3000]+/gu, " ").trim();
+  if (!text) return "";
+  const compact = text.replace(/\n+/g, "");
+  const sentences = compact.match(/[^\u3002\uff01\uff1f!?]+[\u3002\uff01\uff1f!?]?/gu) || [compact];
+  const paragraphCount = Math.max(1, Math.min(6, Math.round(textLength(compact) / 420)));
+  const targetSize = Math.ceil(textLength(compact) / paragraphCount);
+  const paragraphs = [];
+  let current = "";
+  for (const sentence of sentences) {
+    current += sentence.trim();
+    if (textLength(current) >= targetSize && paragraphs.length < paragraphCount - 1) {
+      paragraphs.push(current);
+      current = "";
+    }
+  }
+  if (current) paragraphs.push(current);
+  return paragraphs.map((paragraph) => `\u3000\u3000${paragraph.trim()}`).join("\n");
+}
 
 function sourceBody(value = "") {
   const match = value.match(/##\s*原文\s*\n+([\s\S]*?)(?=\n##\s|$)/u);
@@ -232,7 +255,7 @@ function renderProjectHeader() {
 
 function sourceStage() {
   const original = sourceBody(state.project.files.original.content);
-  const corrected = isMeaningful(state.project.files.corrected.content) ? stripHeading(state.project.files.corrected.content) : "";
+  const corrected = isMeaningful(state.project.files.corrected.content) ? formatCorrectedDraft(stripHeading(state.project.files.corrected.content)) : "";
   return `
     <div class="stage-heading"><div><span>STEP 01</span><h2>先把原稿整理干净</h2><p>粘贴后会自动生成侧栏标题与领域标签，再修正错别字、错误断句和语音转写。</p></div><div class="stage-summary"><b>${textLength(original)}</b><span>原稿字数</span></div></div>
     <div class="dual-editor">
@@ -251,7 +274,7 @@ function sourceStage() {
 }
 
 function rewriteStage() {
-  const source = isMeaningful(state.project.files.corrected.content) ? stripHeading(state.project.files.corrected.content) : sourceBody(state.project.files.original.content);
+  const source = isMeaningful(state.project.files.corrected.content) ? formatCorrectedDraft(stripHeading(state.project.files.corrected.content)) : sourceBody(state.project.files.original.content);
   const resultKey = isMeaningful(state.project.files.voiceover.content) ? "voiceover" : isMeaningful(state.project.files.styled.content) ? "styled" : "rewrite";
   const result = isMeaningful(state.project.files[resultKey].content) ? stripHeading(state.project.files[resultKey].content) : "";
   const settings = state.workspace.settings;
@@ -301,7 +324,7 @@ function openingsStage() {
   const ending = state.workspace.endingOptions.find((item) => item.selected);
   const complete = state.workspace.assembledDraft || assembledText();
   return `
-    <div class="stage-heading"><div><span>STEP 03</span><h2>用新开头和新结尾替换原来的首尾</h2><p>AI 会先剥离改写稿原有的开头和结尾，再把你选中的方案接到正文上，不会重复叠加。</p></div><button class="outline-action" data-action="more-options">✦ 再生成一组</button></div>
+    <div class="stage-heading"><div><span>STEP 03</span><h2>用新开头和新结尾替换原来的首尾</h2><p>AI 会先剥离改写稿原有的开头和结尾，再把你选中的方案接到正文上，不会重复叠加。</p></div></div>
     <div class="option-columns">
       <section><div class="section-label"><span>开头</span><p>前三秒要让人愿意继续听</p></div>${optionCards(state.workspace.openingOptions, "opening")}</section>
       <section><div class="section-label"><span>结尾</span><p>允许升华煽情，但要落到具体内容</p></div>${optionCards(state.workspace.endingOptions, "ending")}</section>
@@ -398,6 +421,12 @@ function verdictBadge(item) {
   </div>`;
 }
 
+function sourceSearchStatus(item) {
+  const status = state.sourceSearches[item.id];
+  if (!status) return "";
+  return `<div class="source-search-status ${escapeHtml(status.status || "")}" data-source-search-status="${escapeHtml(item.id)}">${escapeHtml(status.message || "")}</div>`;
+}
+
 function reviewStage() {
   const manuscript = isMeaningful(state.project.files.voiceover.content) ? stripHeading(state.project.files.voiceover.content) : "";
   const facts = state.workspace.factChecks || [];
@@ -409,7 +438,7 @@ function reviewStage() {
       <div class="review-top"><div><span class="review-index">F${index + 1}</span><span class="level-badge ${item.level}">${item.level === "must" ? "必须修改" : item.level === "recommended" ? "建议修改" : "可以保留"}</span></div><div class="confidence ${confidenceClass(item.confidence)}"><span>置信度</span><b>${item.confidence}%</b><i><u style="width:${item.confidence}%"></u></i></div></div>
       <blockquote>${escapeHtml(item.claim)}</blockquote><p class="fact-summary">${escapeHtml(item.summary)}</p>${verdictBadge(item)}
       <div class="suggestion"><div><span>建议改成</span><small>选中文字即可让 AI 修改</small></div><textarea data-suggestion-edit="fact" data-id="${escapeHtml(item.id)}" aria-label="编辑事实核验建议">${escapeHtml(item.suggestion)}</textarea></div>
-      <footer><div class="source-query-row"><label>检索词</label><input type="text" class="source-query-input" data-source-query data-id="${escapeHtml(item.id)}" value="${escapeHtml(item.sourceQuery || "")}" placeholder="AI 提炼的关键词，可手动修改后重搜" spellcheck="false"><button class="source-query-search" data-source-search data-id="${escapeHtml(item.id)}" title="用当前检索词搜索权威来源">⌕ 搜索</button></div><div class="source-footer-row"><div class="source-links">${item.sources?.length ? item.sources.map((source, sourceIndex) => `<button data-source-preview data-kind="fact" data-id="${escapeHtml(item.id)}" data-source-index="${sourceIndex}" data-url="${escapeHtml(source.url)}" data-title="${escapeHtml(source.title)}" data-query="${escapeHtml(item.claim)}" data-excerpt="${escapeHtml(source.excerpt || "")}">▣ ${source.evidence ? "已缓存证据" : "预览并定位"}：${escapeHtml(source.title)}</button>`).join("") + `<button class="ai-verify-button" data-ai-verify data-id="${escapeHtml(item.id)}" title="让 AI 阅读来源正文，判断证据是否支持该断言">⚖ ${item.verdict ? "重新验证" : "AI 验证证据"}</button>` : `<span class="source-empty-hint">暂无可靠来源，修改检索词后点搜索，或考虑删除这条断言</span>`}</div><div class="decision-actions"><button class="${item.status === "pending" ? "selected-decision" : ""}" data-review="fact" data-id="${item.id}" data-status="pending">重新考虑</button><button class="${item.status === "kept" ? "selected-decision" : ""}" data-review="fact" data-id="${item.id}" data-status="kept">仍然保留</button><button class="accept ${item.status === "accepted" ? "selected-decision" : ""}" data-review="fact" data-id="${item.id}" data-status="accepted">接受并替换</button></div></div></footer>
+      <footer><div class="source-query-row"><label>检索词</label><input type="text" class="source-query-input" data-source-query data-id="${escapeHtml(item.id)}" value="${escapeHtml(item.sourceQuery || "")}" placeholder="AI 提炼的关键词，可手动修改后重搜" spellcheck="false"><button class="source-query-search" data-source-search data-id="${escapeHtml(item.id)}" title="用当前检索词搜索权威来源">⌕ 搜索</button></div>${sourceSearchStatus(item)}<div class="source-footer-row"><div class="source-links">${item.sources?.length ? item.sources.map((source, sourceIndex) => `<button data-source-preview data-kind="fact" data-id="${escapeHtml(item.id)}" data-source-index="${sourceIndex}" data-url="${escapeHtml(source.url)}" data-title="${escapeHtml(source.title)}" data-query="${escapeHtml(item.claim)}" data-excerpt="${escapeHtml(source.excerpt || "")}">▣ ${source.evidence ? "已缓存证据" : "预览并定位"}：${escapeHtml(source.title)}</button>`).join("") + `<button class="ai-verify-button" data-ai-verify data-id="${escapeHtml(item.id)}" title="让 AI 阅读来源正文，判断证据是否支持该断言">⚖ ${item.verdict ? "重新验证" : "AI 验证证据"}</button>` : `<span class="source-empty-hint">暂无可靠来源，修改检索词后点搜索，或考虑删除这条断言</span>`}</div><div class="decision-actions"><button class="${item.status === "pending" ? "selected-decision" : ""}" data-review="fact" data-id="${item.id}" data-status="pending">重新考虑</button><button class="${item.status === "kept" ? "selected-decision" : ""}" data-review="fact" data-id="${item.id}" data-status="kept">仍然保留</button><button class="accept ${item.status === "accepted" ? "selected-decision" : ""}" data-review="fact" data-id="${item.id}" data-status="accepted">接受并替换</button></div></div></footer>
     </article>`).join("") : '<div class="empty-list">点击右上角“检查整合稿”后，事实判断会显示在这里。</div>';
   const riskContent = risks.length ? risks.map((item, index) => `
     <article class="compliance-item ${item.status !== "pending" ? "resolved" : ""}" data-review-card="compliance:${escapeHtml(item.id)}"><div class="risk-marker ${item.severity}">R${index + 1}</div><div class="risk-content"><div><span>${escapeHtml(item.category)}</span><em>${item.severity === "high" ? "高风险" : "中风险"}</em></div><p class="replacement"><del>${escapeHtml(item.original)}</del><i>→</i><span>建议表达 · 选中文字可让 AI 修改</span></p><div class="risk-suggestion"><textarea data-suggestion-edit="compliance" data-id="${escapeHtml(item.id)}" aria-label="编辑风险表达建议">${escapeHtml(item.suggestion)}</textarea></div><small>${escapeHtml(item.reason)}</small></div><div class="decision-actions"><button class="${item.status === "pending" ? "selected-decision" : ""}" data-review="compliance" data-id="${item.id}" data-status="pending">重新考虑</button><button class="${item.status === "kept" ? "selected-decision" : ""}" data-review="compliance" data-id="${item.id}" data-status="kept">不改</button><button class="accept ${item.status === "accepted" ? "selected-decision" : ""}" data-review="compliance" data-id="${item.id}" data-status="accepted">接受并替换</button></div></article>`).join("") : '<div class="empty-list">完成整合稿后，风险表达会结合全文显示在这里。</div>';
@@ -635,30 +664,88 @@ function updateLengthDelta() {
   label.textContent = target ? `目标 ${target} 字 · ${current > target ? `超出 ${current-target}` : `还差 ${target-current}`} 字` : `${current} 字`;
 }
 
+function stageHasOutput(stage) {
+  if (stage === "source") return isMeaningful(state.project.files.corrected.content);
+  if (stage === "rewrite") return isMeaningful(state.project.files.voiceover.content) || isMeaningful(state.project.files.styled.content);
+  if (stage === "openings") return Boolean(state.workspace.openingOptions?.length && state.workspace.endingOptions?.length);
+  if (stage === "review") return Boolean(state.workspace.factChecks?.length || state.workspace.complianceIssues?.length);
+  if (stage === "publish") return Boolean(state.workspace.publish?.titles?.length);
+  return false;
+}
+
+function stageActionLabel(stage) {
+  const labels = {
+    source: ["AI 整理原稿", "AI 重新整理原稿"],
+    rewrite: ["AI 生成改写稿", "AI 重新生成改写稿"],
+    openings: ["AI 生成开头结尾", "AI 重新生成开头结尾"],
+    review: ["AI 校验全文", "AI 重新校验全文"],
+    publish: ["AI 生成发布素材", "AI 重新生成发布素材"]
+  };
+  return labels[stage]?.[stageHasOutput(stage) ? 1 : 0] || "AI 生成";
+}
+
+function progressMarkup() {
+  const progress = state.ai.progress;
+  const visible = progress && progress.stage === state.activeStage;
+  const percent = visible ? Math.max(0, Math.min(100, Number(progress.percent) || 0)) : 0;
+  return `<section class="ai-progress-panel ${visible ? "show" : ""} ${progress?.status === "complete" ? "complete" : ""} ${progress?.status === "error" ? "error" : ""}" id="aiProgressPanel" aria-live="polite">
+    <div class="ai-progress-head"><span class="ai-progress-orb">✦</span><div><b id="aiProgressLabel">${escapeHtml(visible ? progress.label : "正在准备")}</b><small id="aiProgressDetail">${escapeHtml(visible ? progress.detail || "" : "")}</small></div><em id="aiProgressElapsed">${visible ? `${Number(progress.elapsed) || 0} 秒` : ""}</em></div>
+    <div class="ai-progress-track"><i id="aiProgressBar" style="width:${percent}%"></i></div>
+  </section>`;
+}
+
+function updateAIProgressUI() {
+  const progress = state.ai.progress;
+  const panel = $("#aiProgressPanel");
+  if (panel) {
+    const visible = progress && progress.stage === state.activeStage;
+    panel.classList.toggle("show", Boolean(visible));
+    panel.classList.toggle("complete", progress?.status === "complete");
+    panel.classList.toggle("error", progress?.status === "error");
+    if (visible) {
+      $("#aiProgressLabel").textContent = progress.label;
+      $("#aiProgressDetail").textContent = progress.detail || "";
+      $("#aiProgressElapsed").textContent = `${Number(progress.elapsed) || 0} 秒`;
+      $("#aiProgressBar").style.width = `${Math.max(0, Math.min(100, Number(progress.percent) || 0))}%`;
+    }
+  }
+  const actionButton = $('[data-action="run-stage-ai"]', els.stageContent);
+  if (actionButton) {
+    actionButton.disabled = state.ai.running;
+    actionButton.classList.toggle("loading", state.ai.running);
+    actionButton.innerHTML = `<span class="spark">✦</span> ${escapeHtml(state.ai.running ? "AI 处理中…" : stageActionLabel(state.activeStage))}`;
+  }
+  els.generateButton.disabled = state.ai.running;
+}
+
+function setAIProgress(values) {
+  const previous = state.ai.progress || {};
+  state.ai.progress = { ...previous, ...values };
+  updateAIProgressUI();
+}
+
 function renderStage() {
   renderProjectHeader();
   const currentIndex = stageOrder.indexOf(state.activeStage);
-  const actionLabels = {
-    source: "AI 整理原稿", rewrite: "AI 生成改写稿",
-    openings: state.workspace.openingOptions?.length ? "保存完整定稿" : "AI 生成开头结尾",
-    review: "AI 核验事实与违禁词", publish: "AI 生成发布素材"
-  };
   const nextStage = stageOrder[currentIndex + 1];
   els.stageContent.innerHTML = `
     <div class="stage-assistant-bar">
       <div><span>本环节要求</span><p>${escapeHtml(state.workspace.settings.stageInstructions?.[state.activeStage] || "没有额外要求，使用账号固定规则")}</p></div>
       <button data-action="stage-instructions">＋ 补充本环节要求</button>
-    </div>${renderers[state.activeStage]()}
+    </div>
+    <div class="stage-primary-actions"><div><b>${stageHasOutput(state.activeStage) ? "已有结果，可随时重新生成" : "准备好后从这里开始"}</b><span>AI 会展示当前正在进行的处理步骤</span></div><button class="stage-ai-action primary" data-action="run-stage-ai"><span class="spark">✦</span> ${stageActionLabel(state.activeStage)}</button></div>
+    ${progressMarkup()}${renderers[state.activeStage]()}
     <aside class="selection-assistant" id="selectionAssistant" hidden>
       <div><span>已选中文字</span><button data-action="selection-cancel" aria-label="关闭选区编辑">×</button></div>
       <blockquote id="selectionPreview"></blockquote>
       <label>告诉 AI 这段怎么改<input id="selectionInstruction" placeholder="例如：更口语一点；保留爆点但说得严谨；缩短一半…"></label>
       <footer><em id="selectionStatus">只会替换选中的文字</em><button data-action="selection-run">AI 修改选中内容</button></footer>
     </aside>
-    <div class="stage-footer-actions"><div><b>第 ${currentIndex + 1} 步 · ${stageNames[state.activeStage]}</b><span>每一步都可以手动修改后再继续</span></div><button class="stage-ai-action" data-action="run-stage-ai">✦ ${actionLabels[state.activeStage]}</button>${nextStage ? `<button class="stage-next-action" data-action="next-stage">下一步：${stageNames[nextStage]} →</button>` : '<button class="stage-next-action" data-action="copy-package">复制发布方案</button>'}</div>`;
+    <div class="stage-footer-actions"><div><b>第 ${currentIndex + 1} 步 · ${stageNames[state.activeStage]}</b><span>每一步都可以手动修改后再继续</span></div>${nextStage ? `<button class="stage-next-action" data-action="next-stage">下一步：${stageNames[nextStage]} →</button>` : '<button class="stage-next-action" data-action="copy-package">复制发布方案</button>'}</div>`;
   bindStageEvents();
   bindSelectionEditing();
   updateLengthDelta();
+  updateAIProgressUI();
 }
 
 function renderProject() {
@@ -753,7 +840,8 @@ async function handleStageAction(action) {
       const content = withSourceBody(state.project.files.original.content, $("#sourceEditor").value);
       await saveFile("original", content); state.sourceDirty = false; showToast("原稿已保存"); scheduleMetadata(0);
     } else if (action === "save-corrected") {
-      await saveFile("corrected", `# 整理后的原始稿\n\n${$("#correctedEditor").value.trim()}\n`); state.correctedDirty = false; showToast("整理稿已保存");
+      const corrected = formatCorrectedDraft($("#correctedEditor").value);
+      await saveFile("corrected", `# 整理后的原始稿\n\n${corrected}\n`); state.correctedDirty = false; renderStage(); showToast("整理稿已按大段落格式保存");
     } else if (action === "save-rewrite") {
       const body = $("#rewriteEditor").value.trim();
       await saveFile("voiceover", `# 最终口播稿\n\n${body}\n`);
@@ -791,8 +879,7 @@ async function handleStageAction(action) {
     else if (action === "selection-cancel") { state.selectionEdit = null; const panel = $("#selectionAssistant"); if (panel) panel.hidden = true; }
     else if (action === "selection-run") await runSelectionEdit();
     else if (action === "run-stage-ai") {
-      if (state.activeStage === "openings" && state.workspace.openingOptions?.length) await handleStageAction("assemble");
-      else await runAIStage({ bypassPrompt: true });
+      await runAIStage({ bypassPrompt: true });
     }
     else if (action === "next-stage") await goNextStage();
     else if (action === "learn-project") await learnFromProject();
@@ -909,19 +996,49 @@ async function searchFactSources(button) {
   if (!item) return;
   const queryInput = $(`[data-source-query][data-id="${CSS.escape(item.id)}"]`, els.stageContent);
   const query = (queryInput?.value || item.sourceQuery || `${item.claim} ${item.summary || ""}`).trim();
+  if (!query) return showToast("请先填写检索词");
   if (queryInput) { item.sourceQuery = query; queryInput.value = query; }
+  await saveWorkspace();
+  const startedAt = Date.now();
+  const setStatus = (status, message) => {
+    state.sourceSearches[item.id] = { status, message };
+    let statusNode = $(`[data-source-search-status="${CSS.escape(item.id)}"]`, els.stageContent);
+    if (!statusNode) {
+      const row = button.closest(".source-query-row");
+      row?.insertAdjacentHTML("afterend", `<div class="source-search-status" data-source-search-status="${escapeHtml(item.id)}"></div>`);
+      statusNode = $(`[data-source-search-status="${CSS.escape(item.id)}"]`, els.stageContent);
+    }
+    if (statusNode) { statusNode.className = `source-search-status ${status}`; statusNode.textContent = message; }
+  };
   button.disabled = true;
-  button.textContent = "正在检索政府、高校和博物馆来源…";
+  button.textContent = "搜索中…";
+  setStatus("running", "已开始检索当前关键词· 0 秒");
+  clearInterval(sourceSearchTimer);
+  sourceSearchTimer = setInterval(() => {
+    const elapsed = Math.floor((Date.now() - startedAt) / 1000);
+    setStatus("running", `正在查找并筛选相关来源 · ${elapsed} 秒`);
+  }, 1000);
   try {
     const data = await request("/api/source-search", {
       method: "POST",
-      body: JSON.stringify({ query, queries: Array.isArray(item.searchQueries) ? item.searchQueries : [] })
+      body: JSON.stringify({ query, queries: [] })
     });
     item.sources = data.sources || [];
+    const elapsed = Math.floor((Date.now() - startedAt) / 1000);
+    state.sourceSearches[item.id] = item.sources.length
+      ? { status: "success", message: `搜索完成：找到 ${item.sources.length} 个候选来源 · ${elapsed} 秒` }
+      : { status: "empty", message: `搜索完成：没有通过相关性筛选的来源 · ${elapsed} 秒，可换词重试` };
     await saveWorkspace();
     renderStage();
     showToast(item.sources.length ? `找到 ${item.sources.length} 个权威来源，请打开核对` : "没有找到足够可靠的来源，这条断言应谨慎保留");
-  } catch (error) { showToast(error.message); button.disabled = false; button.textContent = "⌕ 搜索"; }
+  } catch (error) {
+    setStatus("error", `搜索失败：${error.message}，可修改检索词后重试`);
+    showToast(error.message);
+    button.disabled = false;
+    button.textContent = "⌕ 重试";
+  } finally {
+    clearInterval(sourceSearchTimer);
+  }
 }
 
 async function searchAllFactSources(button) {
@@ -992,6 +1109,7 @@ async function verifyFactEvidence(button) {
   }
 }
 
+function sessionKey() { return sessionStorage.getItem(AI_KEY_STORAGE) || ""; }
 function searchKey() { return sessionStorage.getItem(SEARCH_KEY_STORAGE) || ""; }
 function selectedProvider() { return sessionStorage.getItem(AI_PROVIDER_STORAGE) || state.ai.provider || "deepseek"; }
 function selectedModel() { return sessionStorage.getItem(AI_MODEL_STORAGE) || state.ai.defaultModel || "deepseek-flash"; }
@@ -1197,7 +1315,7 @@ async function createQuickProject() {
 
 function currentAIPayload() {
   const source = $("#sourceEditor")?.value || sourceBody(state.project.files.original.content);
-  const corrected = $("#correctedEditor")?.value || (isMeaningful(state.project.files.corrected.content) ? stripHeading(state.project.files.corrected.content) : source);
+  const corrected = formatCorrectedDraft($("#correctedEditor")?.value || (isMeaningful(state.project.files.corrected.content) ? stripHeading(state.project.files.corrected.content) : source));
   const draft = $("#reviewEditor")?.value || $("#rewriteEditor")?.value || (isMeaningful(state.project.files.voiceover.content)
     ? stripHeading(state.project.files.voiceover.content)
     : isMeaningful(state.project.files.styled.content) ? stripHeading(state.project.files.styled.content) : corrected);
@@ -1217,7 +1335,8 @@ async function applyAIResult(stage, result) {
       await saveFile("original", withSourceBody(state.project.files.original.content, $("#sourceEditor").value));
       state.sourceDirty = false;
     }
-    await saveFile("corrected", `# 整理后的原始稿\n\n${result.corrected.trim()}\n`);
+    const corrected = formatCorrectedDraft(result.corrected);
+    await saveFile("corrected", `# 整理后的原始稿\n\n${corrected}\n`);
   } else if (stage === "rewrite") {
     await saveFile("voiceover", `# 最终口播稿\n\n${result.rewrite.trim()}\n`);
     state.workspace.bodyDraft = result.rewrite.trim();
@@ -1244,6 +1363,7 @@ async function applyAIResult(stage, result) {
 
 async function runAIStage({ stageOverride, bypassPrompt = false } = {}) {
   if (!hasAIKey()) return openAISettings();
+  if (state.ai.running) return showToast("AI 正在处理，请等待当前任务完成");
   const effectiveStage = stageOverride || state.activeStage;
   if (!bypassPrompt) return openStagePrompt(effectiveStage);
   const payload = currentAIPayload();
@@ -1254,12 +1374,32 @@ async function runAIStage({ stageOverride, bypassPrompt = false } = {}) {
     state.rewriteDirty = false;
   }
   state.ai.running = true;
+  clearInterval(aiProgressTimer);
+  const startedAt = Date.now();
+  setAIProgress({ stage: effectiveStage, status: "running", percent: 8, elapsed: 0, label: "正在准备稿件", detail: "已检查当前文本与本环节要求" });
+  aiProgressTimer = setInterval(() => {
+    if (!state.ai.progress || state.ai.progress.status !== "running") return;
+    state.ai.progress.elapsed = Math.floor((Date.now() - startedAt) / 1000);
+    updateAIProgressUI();
+  }, 1000);
   renderProjectHeader();
   try {
     const stages = effectiveStage === "review" ? ["facts", "compliance"] : [effectiveStage];
     let totalTokens = 0;
     let rewriteInfo = null;
-    for (const stage of stages) {
+    for (let stageIndex = 0; stageIndex < stages.length; stageIndex += 1) {
+      const stage = stages[stageIndex];
+      const progressLabels = {
+        source: ["正在调用 AI 整理原稿", "只纠错、断句和重组大段落"],
+        rewrite: ["正在调用 AI 重构稿件", "模型可能会再次校准字数，用时会更长"],
+        openings: ["正在生成开头和结尾", "同时剥离旧首尾，保留中间正文"],
+        facts: ["正在核验事实并检索来源", "会识别事实点，并尝试读取政府、高校和博物馆来源"],
+        compliance: ["正在检查违禁词与风险表达", "结合全文语境给出替换建议"],
+        publish: ["正在生成发布素材", "生成标题、描述、标签、互动话术和易读错词"]
+      };
+      const [label, detail] = progressLabels[stage];
+      const requestPercent = effectiveStage === "review" ? (stageIndex === 0 ? 22 : 62) : 32;
+      setAIProgress({ label, detail, percent: requestPercent });
       const stagePayload = effectiveStage === "review" ? {
         ...payload,
         settings: {
@@ -1276,10 +1416,16 @@ async function runAIStage({ stageOverride, bypassPrompt = false } = {}) {
       },
         body: JSON.stringify({ provider: selectedProvider(), stage, model: selectedModel(), payload: stagePayload })
       });
+      setAIProgress({
+        label: stage === "facts" ? "事实核验已返回，正在保存" : stage === "compliance" ? "风险检查已返回，正在保存" : "AI 已返回，正在保存结果",
+        detail: "正在写入当前稿件工作区",
+        percent: effectiveStage === "review" ? (stageIndex === 0 ? 52 : 88) : 82
+      });
       await applyAIResult(stage, data.result);
       totalTokens += Number(data.usage?.total_tokens || 0);
       if (stage === "rewrite") rewriteInfo = data;
     }
+    setAIProgress({ status: "complete", percent: 100, label: "AI 处理完成", detail: "结果已保存，可以继续修改或重新生成", elapsed: Math.floor((Date.now() - startedAt) / 1000) });
     renderProject();
     if (rewriteInfo) {
       const target = Number(state.workspace.settings.targetLength) || 1800;
@@ -1287,11 +1433,14 @@ async function runAIStage({ stageOverride, bypassPrompt = false } = {}) {
       showToast(`改写完成：${finalLength} 字，目标 ${target} 字${rewriteInfo.adjustedToTarget ? " · 已自动校准" : ""}`);
     } else showToast(`AI 已完成${totalTokens ? ` · ${totalTokens} tokens` : ""}`);
   } catch (error) {
+    setAIProgress({ status: "error", label: "AI 处理未完成", detail: error.message, elapsed: Math.floor((Date.now() - startedAt) / 1000) });
     showToast(error.message);
     if (/API Key|Incorrect API key|401/i.test(error.message)) openAISettings();
   } finally {
+    clearInterval(aiProgressTimer);
     state.ai.running = false;
     renderProjectHeader();
+    updateAIProgressUI();
   }
 }
 

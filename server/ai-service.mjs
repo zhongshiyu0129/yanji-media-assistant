@@ -183,7 +183,7 @@ function stagePrompt(stage, payload, profile, rules, memory, accountName, liveSe
     : "当前模型不能访问互联网。请识别需要核验的事实并基于已有知识谨慎判断；不要假装已经打开网页，不确定时降低置信度，只有确切知道具体页面地址时才填写来源，否则 sources 留空。";
   const prompts = {
     metadata: `你是中文内容归档编辑。阅读口播原稿，为它拟一个准确、清楚、适合显示在项目侧边栏的短标题，建议 8—18 个汉字，不要使用书名号、引号、感叹号，不写“未命名”“口播稿”。再从固定领域中选择一个最主要的领域，并生成 1—3 个方便归类的细分标签。标题和标签必须依据稿件内容，不做事实扩写。\n\n固定领域：历史、地理、时事、人文、社会、生活、健康、财经、科技、教育、文化、其他。${extra}${shared}\n待归档原稿：\n${source.slice(0, 8000)}`,
-    source: `你是中文口播稿编辑。只做文本整理：修正确定的错别字、同音转写、标点、错误断句，并按叙事内容整理成自然的大段落。不要改写观点，不补充事实，不删除内容。${extra}${shared}\n待整理原稿：\n${source}`,
+    source: `你是中文口播稿编辑。只做文本整理：修正确定的错别字、同音转写、标点、错误断句，并按叙事内容整理成自然的大段落，每段约 300—500 字。每段开头使用两个全角空格，段与段之间只换一行，不要留空行。不要改写观点，不补充事实，不删除内容。${extra}${shared}\n待整理原稿：\n${source}`,
     rewrite: `你是“${accountName}”的口播稿重构编辑。把参考稿写成独立、自然的新稿：保留有价值的事实、观点、节奏和爆点功能，但不要照搬特色句式、比喻、段落顺序或连续措辞。可以重排结构、删减重复内容，并只在有把握时补充通用背景。语言要大白话、知识密度高、节奏紧、适合直接口播。开头和结尾暂时保持简洁，因为后续会单独选择。目标字数不是泛泛参考，正文必须控制在 ${Math.round(target * 0.97)}—${Math.round(target * 1.03)} 个汉字之间。全文整理成 4—7 个自然的大段落，每段围绕一个完整意思展开，不要一句话一段，也不要使用小标题、序号或项目符号。不要提“原稿”“改写”“查重”。\n\n本次特殊要求（只影响本次生成，不覆盖基本要求）：\n${specialInstructions || "无额外要求"}${shared}\n整理后的参考稿：\n${corrected}`,
     openings: `你是短视频口播策划。先识别并剥离当前稿件已有的开场钩子和结尾收束，只把中间主体内容完整放入 body；不得把旧开头、旧结尾或账号落款留在 body 里。再基于 body 生成 5 个差异明显的新开头和 5 个新结尾。开头前三秒要有信息差、反差或问题，但不能用正文接不住的夸张。结尾可以升华、煽情、克制思考或引导讨论，但必须紧扣正文。最终组稿方式只能是“一个新开头 + body + 一个新结尾”，不是在旧稿前后继续叠加。${extra}${shared}\n当前完整稿件：\n${draft}`,
     facts: `你是严谨但懂传播的事实核验编辑。${factInstruction}不要把“缺少证据”写成“确定为假”。claim 必须尽量逐字引用正文中的完整句子，以便在正文定位。sourceQuery 要提炼成适合网页检索的 3—8 个实体、事件或制度关键词，不写判断和语气词。searchQueries 必须给出 3 个不同角度的检索串：第一个是“核心实体+关系”，第二个是“核心事实+权威来源类型（如 政府/博物馆/高校/百科）”，第三个是更通俗或更宽泛的相关表述，三个串用词要有明显差异以提高命中率。每个来源都要给出来源页中直接支持判断的相关原话 excerpt，不能确认原话时不要编造来源。置信度表示证据对当前判断的支持程度。level=must 表示事实性错误或高风险无来源断言必须改；recommended 表示更严谨会更好；optional 表示基本可保留。${extra}${shared}\n待核验正文：\n${draft}`,
@@ -224,11 +224,11 @@ function characterCount(value = "") {
   return String(value).replace(/\s/g, "").length;
 }
 
-function largeParagraphs(value = "") {
+function largeParagraphs(value = "", { indent = false, separator = "\n\n", targetSize: preferredTarget = 350 } = {}) {
   const text = String(value).replace(/\r/g, "").replace(/\n+/g, "").trim();
   if (!text) return "";
   const sentences = text.match(/[^。！？!?]+[。！？!?]?/gu) || [text];
-  const desired = Math.max(1, Math.min(6, Math.round(characterCount(text) / 350)));
+  const desired = Math.max(1, Math.min(6, Math.round(characterCount(text) / preferredTarget)));
   const targetSize = Math.ceil(characterCount(text) / desired);
   const paragraphs = [];
   let current = "";
@@ -240,7 +240,7 @@ function largeParagraphs(value = "") {
     }
   }
   if (current) paragraphs.push(current);
-  return paragraphs.join("\n\n");
+  return paragraphs.map((paragraph) => `${indent ? "　　" : ""}${paragraph}`).join(separator);
 }
 
 function configuredProvider() {
@@ -330,6 +330,9 @@ export function createAIService(root) {
     }
 
     let response = await send(makeBody(prompt));
+    if (stage === "source") {
+      response.result.corrected = largeParagraphs(response.result.corrected, { indent: true, separator: "\n", targetSize: 420 });
+    }
     if (stage === "facts" && Array.isArray(response.result.factChecks)) {
       const pending = response.result.factChecks.filter((item) => !item.sources?.length);
       for (let i = 0; i < pending.length; i += 1) {
