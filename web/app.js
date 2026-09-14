@@ -15,7 +15,7 @@ const state = {
   selectionEdit: null,
   selectionRunning: false,
   chatRunning: false,
-  sourceSearches: {},
+  sourceSearches: {}, syncScrolling: false,
   ai: { configured: false, provider: "deepseek", providerLabel: "DeepSeek", defaultModel: "deepseek-flash", running: false, progress: null }
 };
 
@@ -68,6 +68,7 @@ const fixedRequirements = {
 };
 
 const processFiles = [
+  ["timeline", "会话记录"],
   ["extraction", "原稿拆解"], ["corrected", "转写纠错"], ["hooks", "开头方案"],
   ["rewrite", "重构初稿"], ["deepened", "内容深化"], ["styled", "风格校准"],
   ["review", "事实与合规"], ["log", "操作记录"]
@@ -81,6 +82,39 @@ async function request(url, options = {}) {
   const data = await response.json();
   if (!response.ok) throw new Error(data.error || "请求失败");
   return data;
+}
+
+async function requestAIStream(payload, onProgress = () => {}) {
+  const headers = { "Content-Type": "application/json" };
+  if (sessionKey()) headers["X-AI-Api-Key"] = sessionKey();
+  if (searchKey()) headers["X-Search-Api-Key"] = searchKey();
+  const response = await fetch("/api/ai/run-stream", { method: "POST", headers, body: JSON.stringify(payload) });
+  if (!response.ok || !response.body) throw new Error(`AI 请求失败（${response.status}）`);
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  let result = null;
+  while (true) {
+    const { value, done } = await reader.read();
+    buffer += decoder.decode(value || new Uint8Array(), { stream: !done });
+    const lines = buffer.split("\n"); buffer = lines.pop() || "";
+    for (const line of lines) {
+      if (!line.trim()) continue;
+      const event = JSON.parse(line);
+      if (event.type === "progress") onProgress(event);
+      else if (event.type === "result") result = event.data;
+      else if (event.type === "error") throw new Error(event.error || "AI 处理失败");
+    }
+    if (done) break;
+  }
+  if (!result) throw new Error("AI 没有返回最终结果");
+  return result;
+}
+
+function appendActivity(values) {
+  const entry = { id: `activity-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`, at: new Date().toISOString(), ...values };
+  state.workspace.activityLog = [...(state.workspace.activityLog || []), entry].slice(-200);
+  return entry;
 }
 
 function escapeHtml(value = "") {
@@ -136,6 +170,27 @@ function sourceBody(value = "") {
   return body === "请在这里粘贴需要处理的原稿。" ? "" : body;
 }
 
+function sourceDetails(value = "") {
+  const field = (label) => value.match(new RegExp(`^-\\s*${label}：?\\s*(.*)$`, "mu"))?.[1]?.trim() || "";
+  return {
+    title: value.match(/##\s*标题\s*\n+([^\n]*)/u)?.[1]?.trim() || "",
+    platform: field("来源平台"), author: field("作者"), url: field("链接"), body: sourceBody(value)
+  };
+}
+
+function withSourceDetails(markdownText = "", details = {}) {
+  const tail = markdownText.match(/\n##\s*本项目要求[\s\S]*$/u)?.[0] || "";
+  return `# 原始口播稿\n\n## 标题\n\n${String(details.title || "").trim()}\n\n## 来源备注\n\n- 来源平台：${String(details.platform || "").trim()}\n- 作者：${String(details.author || "").trim()}\n- 链接：${String(details.url || "").trim()}\n\n## 原文\n\n${String(details.body || "").trim()}${tail ? `\n${tail.trimStart()}` : "\n"}`;
+}
+
+function sourceEditorDetails() {
+  return {
+    title: $("#sourceTitle")?.value || "", platform: $("#sourcePlatform")?.value || "",
+    author: $("#sourceAuthor")?.value || "", url: $("#sourceUrl")?.value || "",
+    body: $("#sourceEditor")?.value || ""
+  };
+}
+
 function withSourceBody(markdownText = "", body = "") {
   if (/##\s*原文\s*\n/u.test(markdownText)) {
     return markdownText.replace(/(##\s*原文\s*\n+)[\s\S]*?(?=\n##\s|$)/u, `$1${body.trim()}\n`);
@@ -160,7 +215,8 @@ function defaultWorkspace() {
     metadata: { domain: "", tags: [], generated: false },
     openingOptions: [], endingOptions: [], factChecks: [], complianceIssues: [],
     publish: { titles: [], descriptions: [], tags: [], comments: [], pronunciations: [] },
-    conversation: [], projectMemory: { notes: [] }, learningCandidates: [], decisions: {}
+    conversation: [], activityLog: [], projectMemory: { notes: [] }, learningCandidates: [], decisions: {},
+    ui: { syncScroll: true, paneRatio: 50 }
   };
 }
 
@@ -177,6 +233,8 @@ function loadWorkspace(project) {
       metadata: { ...defaults.metadata, ...(parsed.metadata || {}) },
       publish: { ...defaults.publish, ...(parsed.publish || {}) },
       conversation: Array.isArray(parsed.conversation) ? parsed.conversation : [],
+      activityLog: Array.isArray(parsed.activityLog) ? parsed.activityLog : [],
+      ui: { ...defaults.ui, ...(parsed.ui || {}) },
       decisions: parsed.decisions || {}
     };
   } catch { return defaultWorkspace(); }
@@ -254,17 +312,26 @@ function renderProjectHeader() {
 }
 
 function sourceStage() {
-  const original = sourceBody(state.project.files.original.content);
+  const details = sourceDetails(state.project.files.original.content);
+  const original = details.body;
   const corrected = isMeaningful(state.project.files.corrected.content) ? formatCorrectedDraft(stripHeading(state.project.files.corrected.content)) : "";
   return `
-    <div class="stage-heading"><div><span>STEP 01</span><h2>先把原稿整理干净</h2><p>粘贴后会自动生成侧栏标题与领域标签，再修正错别字、错误断句和语音转写。</p></div><div class="stage-summary"><b>${textLength(original)}</b><span>原稿字数</span></div></div>
-    <div class="dual-editor">
+    <div class="stage-heading"><div><span>STEP 01</span><h2>先把原稿整理干净</h2><p>来源信息都可以不填，最主要的是原文；AI 只整理正文，不会把来源备注混进去。</p></div><div class="stage-summary"><b>${textLength(original)}</b><span>原稿字数</span></div></div>
+    ${stageControlsMarkup()}
+    <div class="source-meta-form">
+      <label><span>原标题（可留空）</span><input id="sourceTitle" value="${escapeHtml(details.title)}" placeholder="原稿标题"></label>
+      <label><span>来源平台（可留空）</span><input id="sourcePlatform" value="${escapeHtml(details.platform)}" placeholder="如：抖音、视频号"></label>
+      <label><span>作者（可留空）</span><input id="sourceAuthor" value="${escapeHtml(details.author)}" placeholder="作者名"></label>
+      <label><span>链接（可留空）</span><input id="sourceUrl" value="${escapeHtml(details.url)}" placeholder="https://"></label>
+    </div>
+    ${compareToolsMarkup()}
+    <div class="dual-editor" style="--pane-left:${Number(state.workspace.ui?.paneRatio) || 50}%">
       <article class="editor-box">
         <header><div><b>扒取的原始稿</b><span>保持原样留档</span></div><em id="sourceCount">${textLength(original)} 字</em></header>
         <textarea id="sourceEditor" spellcheck="false" placeholder="把视频口播稿粘贴到这里…">${escapeHtml(original)}</textarea>
         <footer><span>原始版本始终保留</span><button data-action="save-source">保存原稿</button></footer>
       </article>
-      <div class="between-arrow"><span>AI 整理</span><i>→</i></div>
+      <div class="between-arrow" data-resize-handle title="左右拖动调整宽度"><span>AI 整理</span><i>↔</i></div>
       <article class="editor-box corrected-box">
         <header><div><b>整理后的原始稿</b><span>纠错、断句与分段</span></div><em id="correctedCount">${textLength(corrected)} 字</em></header>
         <textarea id="correctedEditor" spellcheck="false" placeholder="AI 整理后的稿件会显示在这里，你可以继续修改。">${escapeHtml(corrected)}</textarea>
@@ -276,18 +343,19 @@ function sourceStage() {
 function rewriteStage() {
   const source = isMeaningful(state.project.files.corrected.content) ? formatCorrectedDraft(stripHeading(state.project.files.corrected.content)) : sourceBody(state.project.files.original.content);
   const resultKey = isMeaningful(state.project.files.voiceover.content) ? "voiceover" : isMeaningful(state.project.files.styled.content) ? "styled" : "rewrite";
-  const result = isMeaningful(state.project.files[resultKey].content) ? stripHeading(state.project.files[resultKey].content) : "";
+  const result = isMeaningful(state.project.files[resultKey].content) ? formatCorrectedDraft(stripHeading(state.project.files[resultKey].content)) : "";
   const settings = state.workspace.settings;
   const special = String(settings.specialInstructions || "").trim();
   return `
     <div class="stage-heading"><div><span>STEP 02</span><h2>改写成你的账号风格的稿子</h2><p>保留节奏和有效爆点，但重组结构与措辞；允许删减，也允许基于可靠资料补充内容。</p></div><label class="target-length"><span>希望成稿字数</span><div><button data-action="length-down">−</button><input id="targetLength" type="number" min="300" max="10000" step="100" value="${Number(settings.targetLength) || 1800}"><button data-action="length-up">＋</button></div></label></div>
     <div class="rewrite-brief">
       <div class="style-tags"><span>固定要求</span><b>大白话</b><b>知识密度高</b><b>节奏紧</b><b>保留爆点</b><b>大段落</b><b>严格控字数</b></div>
-      <button class="special-request" data-action="rewrite-notes"><span>本次特殊要求</span><b>${escapeHtml(special ? (special.length > 46 ? `${special.slice(0, 46)}…` : special) : "点击填写，可留空")}</b><i>编辑</i></button>
+      ${stageControlsMarkup(special)}
     </div>
-    <div class="dual-editor rewrite-editors">
+    ${compareToolsMarkup()}
+    <div class="dual-editor rewrite-editors" style="--pane-left:${Number(state.workspace.ui?.paneRatio) || 50}%">
       <article class="editor-box reference-box"><header><div><b>整理稿</b><span>本轮改写依据</span></div><em>${textLength(source)} 字</em></header><div class="readonly-copy">${escapeHtml(source || "请先完成原稿整理。").replace(/\n/g,"<br>")}</div></article>
-      <div class="between-arrow"><span>深度重构</span><i>→</i></div>
+      <div class="between-arrow" data-resize-handle title="左右拖动调整宽度"><span>深度重构</span><i>↔</i></div>
       <article class="editor-box result-edit-box"><header><div><b>改写稿</b><span>可随时手动调整</span></div><em id="rewriteCount">${textLength(result)} 字</em></header><textarea id="rewriteEditor" spellcheck="false" placeholder="AI 改写结果会显示在这里…">${escapeHtml(result)}</textarea><footer><span id="lengthDelta">目标 ${settings.targetLength} 字</span><button data-action="save-rewrite">保存改写稿</button></footer></article>
     </div>`;
 }
@@ -316,7 +384,7 @@ function assemblyBody() {
 function assembledText() {
   const opening = state.workspace.openingOptions.find((item) => item.selected)?.text?.trim() || "";
   const ending = state.workspace.endingOptions.find((item) => item.selected)?.text?.trim() || "";
-  return [opening, assemblyBody(), ending].filter(Boolean).join("\n\n");
+  return formatCorrectedDraft([opening, assemblyBody(), ending].filter(Boolean).join("\n"));
 }
 
 function openingsStage() {
@@ -325,11 +393,25 @@ function openingsStage() {
   const complete = state.workspace.assembledDraft || assembledText();
   return `
     <div class="stage-heading"><div><span>STEP 03</span><h2>用新开头和新结尾替换原来的首尾</h2><p>AI 会先剥离改写稿原有的开头和结尾，再把你选中的方案接到正文上，不会重复叠加。</p></div></div>
+    ${stageControlsMarkup()}
     <div class="option-columns">
       <section><div class="section-label"><span>开头</span><p>前三秒要让人愿意继续听</p></div>${optionCards(state.workspace.openingOptions, "opening")}</section>
       <section><div class="section-label"><span>结尾</span><p>允许升华煽情，但要落到具体内容</p></div>${optionCards(state.workspace.endingOptions, "ending")}</section>
     </div>
+    ${replacementDiffMarkup(opening, ending)}
     <section class="complete-manuscript"><header><div><b>完整定稿预览</b><span>${opening && ending ? "已用所选首尾替换原稿首尾" : "选择开头和结尾后生成完整稿件"}</span></div><em id="assembledCount">${textLength(complete)} 字</em></header><textarea id="assembledEditor" spellcheck="false" placeholder="选择开头和结尾后，完整稿件会显示在这里…">${escapeHtml(complete)}</textarea><footer><span>这里显示并保存的是完整稿件，你也可以继续手动修改</span><button data-action="assemble">生成并保存完整定稿</button></footer></section>`;
+}
+
+function replacementDiffMarkup(opening, ending) {
+  if (!opening && !ending) return "";
+  const draft = String(state.workspace.bodyDraft || stripHeading(state.project.files.voiceover.content) || "").trim();
+  const paragraphs = draft.split(/\n+/u).map((part) => part.trim()).filter(Boolean);
+  const oldOpening = paragraphs[0] || "原开头";
+  const oldEnding = paragraphs.at(-1) || "原结尾";
+  return `<section class="replacement-diff"><header><b>首尾替换记录</b><span>旧内容保留划线，方便回看</span></header>
+    ${opening ? `<p><em>开头</em><del>${escapeHtml(oldOpening)}</del><i>→</i><ins>${escapeHtml(opening.text)}</ins></p>` : ""}
+    ${ending ? `<p><em>结尾</em><del>${escapeHtml(oldEnding)}</del><i>→</i><ins>${escapeHtml(ending.text)}</ins></p>` : ""}
+  </section>`;
 }
 
 function confidenceClass(score) { return score >= 85 ? "high" : score >= 60 ? "medium" : "low"; }
@@ -444,10 +526,12 @@ function reviewStage() {
     <article class="compliance-item ${item.status !== "pending" ? "resolved" : ""}" data-review-card="compliance:${escapeHtml(item.id)}"><div class="risk-marker ${item.severity}">R${index + 1}</div><div class="risk-content"><div><span>${escapeHtml(item.category)}</span><em>${item.severity === "high" ? "高风险" : "中风险"}</em></div><p class="replacement"><del>${escapeHtml(item.original)}</del><i>→</i><span>建议表达 · 选中文字可让 AI 修改</span></p><div class="risk-suggestion"><textarea data-suggestion-edit="compliance" data-id="${escapeHtml(item.id)}" aria-label="编辑风险表达建议">${escapeHtml(item.suggestion)}</textarea></div><small>${escapeHtml(item.reason)}</small></div><div class="decision-actions"><button class="${item.status === "pending" ? "selected-decision" : ""}" data-review="compliance" data-id="${item.id}" data-status="pending">重新考虑</button><button class="${item.status === "kept" ? "selected-decision" : ""}" data-review="compliance" data-id="${item.id}" data-status="kept">不改</button><button class="accept ${item.status === "accepted" ? "selected-decision" : ""}" data-review="compliance" data-id="${item.id}" data-status="accepted">接受并替换</button></div></article>`).join("") : '<div class="empty-list">完成整合稿后，风险表达会结合全文显示在这里。</div>';
   return `
     <div class="stage-heading"><div><span>STEP 04</span><h2>在整合好的稿件上做全文审校</h2><p>左边始终保留完整上下文；右边同时看事实来源和风险表达，接受建议会直接替换到成稿。</p></div><div class="review-heading-actions">${missingSourceCount ? `<button class="small-button source-batch-button" data-action="search-all-sources">⌕ 为 ${missingSourceCount} 条核验补来源</button>` : ""}<div class="review-progress"><b>${resolved}/${facts.length + risks.length}</b><span>已处理</span></div></div></div>
+    ${stageControlsMarkup()}
     <div class="review-legend"><span><i class="must"></i>必须修改</span><span><i class="recommended"></i>建议修改</span><span><i class="optional"></i>可保留表达</span><em>置信度是证据支持程度，不是绝对真伪。</em></div>
-    <div class="review-workbench">
+    ${compareToolsMarkup()}
+    <div class="review-workbench" style="--pane-left:${Number(state.workspace.ui?.paneRatio) || 50}%">
       <article class="editor-box review-manuscript"><header><div><b>整合后的完整稿件</b><span>悬停标记即可对应右侧建议</span></div><div class="review-view-switch"><button class="${state.reviewMode === "annotated" ? "active" : ""}" data-action="review-annotated">标注阅读</button><button class="${state.reviewMode === "edit" ? "active" : ""}" data-action="review-edit">手动修改</button><em id="reviewCount">${textLength(manuscript)} 字</em></div></header>${state.reviewMode === "edit" ? `<textarea id="reviewEditor" spellcheck="false" placeholder="请先在“开头结尾”中组合成稿…">${escapeHtml(manuscript)}</textarea>` : `<div class="annotated-copy" id="annotatedCopy">${annotatedManuscript(manuscript, facts, risks)}</div>`}<footer><span>黄色为事实点，红色为风险表达</span>${state.reviewMode === "edit" ? '<button data-action="save-review">保存全文</button>' : '<button data-action="review-edit">进入修改</button>'}</footer></article>
-      <aside class="combined-review">
+      <div class="workbench-resizer" data-resize-handle title="左右拖动调整宽度">↔</div><aside class="combined-review">
         <section><div class="combined-review-title"><div><b>事实核验</b><span>来源、置信度与修改级别</span></div><em>${facts.length} 条</em></div><div class="review-list">${factContent}</div></section>
         <section><div class="combined-review-title"><div><b>违禁词与风险表达</b><span>依据你提供的规则库，结合全文判断</span></div><em>${risks.length} 条</em></div><div class="source-note"><span>规则库</span><b>用户提供</b><p>平台规则会变化，建议仍以发布时官方规则为准。</p></div><div class="compliance-list">${riskContent}</div></section>
       </aside>
@@ -473,6 +557,7 @@ function publishStage() {
   const pronunciations = publish.pronunciations || [];
   return `
     <div class="stage-heading"><div><span>STEP 05</span><h2>选择发布素材</h2><p>选中的标题会同步成为左侧稿件标题，再把描述、标签和评论区话术组成发布方案。</p></div><button class="outline-action" data-action="copy-package">复制已选方案</button></div>
+    ${stageControlsMarkup()}
     <div class="publish-grid">
       ${selectableGroup("劲爆标题", "可以吸引人，但正文必须接得住", "title", publish.titles || [])}
       ${selectableGroup("视频描述", "交代内容价值，不重复标题", "description", publish.descriptions || [])}
@@ -497,6 +582,10 @@ function bindStageEvents() {
     els.saveState.textContent = "原稿有未保存修改";
     scheduleMetadata();
   });
+  ["sourceTitle", "sourcePlatform", "sourceAuthor", "sourceUrl"].forEach((id) => $("#" + id)?.addEventListener("input", () => {
+    state.sourceDirty = true;
+    els.saveState.textContent = "来源信息有未保存修改";
+  }));
   correctedEditor?.addEventListener("input", () => { state.correctedDirty = true; $("#correctedCount").textContent = `${textLength(correctedEditor.value)} 字`; els.saveState.textContent = "整理稿有未保存修改"; });
   rewriteEditor?.addEventListener("input", () => { state.rewriteDirty = true; $("#rewriteCount").textContent = `${textLength(rewriteEditor.value)} 字`; updateLengthDelta(); els.saveState.textContent = "改写稿有未保存修改"; });
   reviewEditor?.addEventListener("input", () => { state.rewriteDirty = true; $("#reviewCount").textContent = `${textLength(reviewEditor.value)} 字`; els.saveState.textContent = "整合稿有未保存修改"; });
@@ -540,6 +629,42 @@ function bindStageEvents() {
     const item = state.workspace.factChecks?.find((entry) => entry.id === input.dataset.id);
     if (item) { item.sourceQuery = input.value.trim(); queueWorkspaceSave(); }
   }));
+}
+
+function bindCompareWorkspace() {
+  const container = $(".dual-editor, .review-workbench", els.stageContent);
+  if (!container) return;
+  let syncing = false;
+  const candidates = $$("textarea, .readonly-copy, .annotated-copy, .combined-review", container).filter((node) => node.scrollHeight > node.clientHeight || node.tagName === "TEXTAREA");
+  const sync = (source, target) => {
+    if (syncing || state.workspace.ui?.syncScroll === false || !target) return;
+    const sourceRange = Math.max(1, source.scrollHeight - source.clientHeight);
+    const targetRange = Math.max(0, target.scrollHeight - target.clientHeight);
+    syncing = true;
+    target.scrollTop = (source.scrollTop / sourceRange) * targetRange;
+    requestAnimationFrame(() => { syncing = false; });
+  };
+  if (candidates.length >= 2) {
+    candidates[0].addEventListener("scroll", () => sync(candidates[0], candidates[1]), { passive: true });
+    candidates[1].addEventListener("scroll", () => sync(candidates[1], candidates[0]), { passive: true });
+  }
+  const handle = $("[data-resize-handle]", container);
+  if (!handle || matchMedia("(max-width: 760px)").matches) return;
+  handle.addEventListener("pointerdown", (event) => {
+    event.preventDefault(); handle.setPointerCapture(event.pointerId); container.classList.add("resizing");
+    const move = (moveEvent) => {
+      const rect = container.getBoundingClientRect();
+      const ratio = Math.max(25, Math.min(75, ((moveEvent.clientX - rect.left) / rect.width) * 100));
+      container.style.setProperty("--pane-left", `${ratio}%`);
+      state.workspace.ui.paneRatio = Math.round(ratio * 10) / 10;
+    };
+    const up = () => {
+      container.classList.remove("resizing");
+      handle.removeEventListener("pointermove", move); handle.removeEventListener("pointerup", up);
+      queueWorkspaceSave();
+    };
+    handle.addEventListener("pointermove", move); handle.addEventListener("pointerup", up, { once: true });
+  });
 }
 
 function showSelectionAssistant(selection) {
@@ -588,14 +713,9 @@ async function runSelectionEdit() {
   if (button) { button.disabled = true; button.textContent = "AI 正在修改…"; }
   if (status) status.textContent = "正在结合前后文处理选区";
   try {
-    const data = await request("/api/ai/run", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        ...(sessionKey() ? { "X-AI-Api-Key": sessionKey() } : {}),
-        ...(searchKey() ? { "X-Search-Api-Key": searchKey() } : {})
-      },
-      body: JSON.stringify({ provider: selectedProvider(), stage: "selection", model: selectedModel(), payload: { ...currentAIPayload(), ...selection, editor: undefined, message: instruction } })
+    const data = await requestAIStream({ provider: selectedProvider(), stage: "selection", model: selectedModel(), payload: { ...currentAIPayload(), ...selection, editor: undefined, message: instruction } }, (event) => {
+      if (button) button.textContent = `${Number(event.percent) || 0}% · AI 修改中`;
+      if (status) status.textContent = event.label || "正在处理选区";
     });
     const replacement = String(data.result.replacement || "");
     if (selection.type === "editor" && selection.editor?.isConnected) {
@@ -611,7 +731,7 @@ async function runSelectionEdit() {
       const start = manuscript.indexOf(selection.selected);
       if (start < 0) throw new Error("选中文字已经变化，请重新选择");
       const updated = `${manuscript.slice(0, start)}${replacement}${manuscript.slice(start + selection.selected.length)}`;
-      await saveFile("voiceover", `# 最终口播稿\n\n${updated.trim()}\n`);
+      await saveFile("voiceover", `# 最终口播稿\n\n${formatCorrectedDraft(updated)}\n`);
       state.rewriteDirty = false;
     }
     state.workspace.conversation ||= [];
@@ -684,12 +804,28 @@ function stageActionLabel(stage) {
   return labels[stage]?.[stageHasOutput(stage) ? 1 : 0] || "AI 生成";
 }
 
+function stageControlsMarkup(instructionOverride = null) {
+  const stored = state.workspace.settings.stageInstructions?.[state.activeStage]
+    || (state.activeStage === "rewrite" ? state.workspace.settings.specialInstructions : "") || "";
+  const instruction = instructionOverride === null ? stored : instructionOverride;
+  return `<section class="stage-controls">
+    <button class="stage-requirement" data-action="stage-instructions"><span>本次要求（可留空）</span><b>${escapeHtml(instruction ? (instruction.length > 54 ? `${instruction.slice(0, 54)}…` : instruction) : "没有额外要求，点击填写")}</b><i>编辑</i></button>
+    <button class="stage-ai-action primary" data-action="run-stage-ai"><span class="spark">✦</span> ${stageActionLabel(state.activeStage)}</button>
+    ${progressMarkup()}
+  </section>`;
+}
+
+function compareToolsMarkup() {
+  const enabled = state.workspace.ui?.syncScroll !== false;
+  return `<div class="compare-tools"><span>双栏对照</span><button class="${enabled ? "active" : ""}" data-action="toggle-scroll-sync">${enabled ? "✓ 取消跟随" : "开启一键跟随"}</button><em>${enabled ? "跟随已开启：滚动任意一栏，另一栏会按相同比例跟随" : "两栏可独立滚动"}</em></div>`;
+}
+
 function progressMarkup() {
   const progress = state.ai.progress;
   const visible = progress && progress.stage === state.activeStage;
   const percent = visible ? Math.max(0, Math.min(100, Number(progress.percent) || 0)) : 0;
   return `<section class="ai-progress-panel ${visible ? "show" : ""} ${progress?.status === "complete" ? "complete" : ""} ${progress?.status === "error" ? "error" : ""}" id="aiProgressPanel" aria-live="polite">
-    <div class="ai-progress-head"><span class="ai-progress-orb">✦</span><div><b id="aiProgressLabel">${escapeHtml(visible ? progress.label : "正在准备")}</b><small id="aiProgressDetail">${escapeHtml(visible ? progress.detail || "" : "")}</small></div><em id="aiProgressElapsed">${visible ? `${Number(progress.elapsed) || 0} 秒` : ""}</em></div>
+    <div class="ai-progress-head"><span class="ai-progress-orb">✦</span><div><b id="aiProgressLabel">${escapeHtml(visible ? progress.label : "正在准备")}</b><small id="aiProgressDetail">${escapeHtml(visible ? progress.detail || "" : "")}</small></div><em id="aiProgressElapsed">${visible ? `${percent}% · ${Number(progress.elapsed) || 0} 秒` : ""}</em></div>
     <div class="ai-progress-track"><i id="aiProgressBar" style="width:${percent}%"></i></div>
   </section>`;
 }
@@ -705,7 +841,7 @@ function updateAIProgressUI() {
     if (visible) {
       $("#aiProgressLabel").textContent = progress.label;
       $("#aiProgressDetail").textContent = progress.detail || "";
-      $("#aiProgressElapsed").textContent = `${Number(progress.elapsed) || 0} 秒`;
+      $("#aiProgressElapsed").textContent = `${Math.max(0, Math.min(100, Number(progress.percent) || 0))}% · ${Number(progress.elapsed) || 0} 秒`;
       $("#aiProgressBar").style.width = `${Math.max(0, Math.min(100, Number(progress.percent) || 0))}%`;
     }
   }
@@ -729,12 +865,7 @@ function renderStage() {
   const currentIndex = stageOrder.indexOf(state.activeStage);
   const nextStage = stageOrder[currentIndex + 1];
   els.stageContent.innerHTML = `
-    <div class="stage-assistant-bar">
-      <div><span>本环节要求</span><p>${escapeHtml(state.workspace.settings.stageInstructions?.[state.activeStage] || "没有额外要求，使用账号固定规则")}</p></div>
-      <button data-action="stage-instructions">＋ 补充本环节要求</button>
-    </div>
-    <div class="stage-primary-actions"><div><b>${stageHasOutput(state.activeStage) ? "已有结果，可随时重新生成" : "准备好后从这里开始"}</b><span>AI 会展示当前正在进行的处理步骤</span></div><button class="stage-ai-action primary" data-action="run-stage-ai"><span class="spark">✦</span> ${stageActionLabel(state.activeStage)}</button></div>
-    ${progressMarkup()}${renderers[state.activeStage]()}
+    ${renderers[state.activeStage]()}
     <aside class="selection-assistant" id="selectionAssistant" hidden>
       <div><span>已选中文字</span><button data-action="selection-cancel" aria-label="关闭选区编辑">×</button></div>
       <blockquote id="selectionPreview"></blockquote>
@@ -743,6 +874,7 @@ function renderStage() {
     </aside>
     <div class="stage-footer-actions"><div><b>第 ${currentIndex + 1} 步 · ${stageNames[state.activeStage]}</b><span>每一步都可以手动修改后再继续</span></div>${nextStage ? `<button class="stage-next-action" data-action="next-stage">下一步：${stageNames[nextStage]} →</button>` : '<button class="stage-next-action" data-action="copy-package">复制发布方案</button>'}</div>`;
   bindStageEvents();
+  bindCompareWorkspace();
   bindSelectionEditing();
   updateLengthDelta();
   updateAIProgressUI();
@@ -826,7 +958,11 @@ async function decide(kind, id, status) {
 
 function openProcess(key = "extraction") {
   els.processNav.innerHTML = processFiles.map(([fileKey, label]) => `<button class="${fileKey === key ? "active" : ""}" data-process-file="${fileKey}">${label}${state.project.stages[fileKey] ? " ·" : ""}</button>`).join("");
-  els.processContent.innerHTML = markdown(state.project.files[key]?.content || "# 暂无内容\n\n这个阶段还没有开始。");
+  if (key === "timeline") {
+    const events = [...(state.workspace.activityLog || []), ...(state.workspace.conversation || []).map((item, index) => ({ id: `chat-${index}`, type: "chat", label: item.role === "user" ? "我对 AI 说" : "AI 回复", stage: item.stage, at: item.at, detail: item.text }))]
+      .sort((a, b) => new Date(b.at || b.completedAt || 0) - new Date(a.at || a.completedAt || 0));
+    els.processContent.innerHTML = `<div class="activity-timeline"><h2>本篇会话与生成记录</h2><p>这里会随项目保存，后续生成会读取最近记录作为上下文。</p>${events.length ? events.map((item) => `<article><span>${escapeHtml(stageNames[item.stage] || item.stage || "整篇")}</span><div><b>${escapeHtml(item.label || item.type || "记录")}</b><p>${escapeHtml(item.detail || item.instruction || item.error || "")}</p><small>${item.at ? new Date(item.at).toLocaleString("zh-CN") : ""}${item.status ? ` · ${escapeHtml(item.status)}` : ""}${item.elapsed ? ` · ${item.elapsed} 秒` : ""}</small></div></article>`).join("") : '<div class="empty-list">还没有生成或沟通记录。</div>'}</div>`;
+  } else els.processContent.innerHTML = markdown(state.project.files[key]?.content || "# 暂无内容\n\n这个阶段还没有开始。");
   $$('[data-process-file]', els.processNav).forEach((button) => button.addEventListener("click", () => openProcess(button.dataset.processFile)));
   if (!els.processDialog.open) els.processDialog.showModal();
 }
@@ -837,25 +973,26 @@ async function handleStageAction(action) {
       const button = $('[data-action="search-all-sources"]');
       if (button) await searchAllFactSources(button);
     } else if (action === "save-source") {
-      const content = withSourceBody(state.project.files.original.content, $("#sourceEditor").value);
+      const content = withSourceDetails(state.project.files.original.content, sourceEditorDetails());
       await saveFile("original", content); state.sourceDirty = false; showToast("原稿已保存"); scheduleMetadata(0);
     } else if (action === "save-corrected") {
       const corrected = formatCorrectedDraft($("#correctedEditor").value);
       await saveFile("corrected", `# 整理后的原始稿\n\n${corrected}\n`); state.correctedDirty = false; renderStage(); showToast("整理稿已按大段落格式保存");
     } else if (action === "save-rewrite") {
-      const body = $("#rewriteEditor").value.trim();
+      const body = formatCorrectedDraft($("#rewriteEditor").value);
       await saveFile("voiceover", `# 最终口播稿\n\n${body}\n`);
       state.workspace.bodyDraft = body;
       await saveWorkspace();
       state.rewriteDirty = false; showToast("改写稿已保存");
     } else if (action === "save-review") {
-      await saveFile("voiceover", `# 最终口播稿\n\n${$("#reviewEditor").value.trim()}\n`); state.rewriteDirty = false; showToast("完整稿件已保存");
+      const body = formatCorrectedDraft($("#reviewEditor").value);
+      await saveFile("voiceover", `# 最终口播稿\n\n${body}\n`); state.rewriteDirty = false; renderStage(); showToast("完整稿件已按统一段落规范保存");
     } else if (action === "review-edit") {
       state.reviewMode = "edit"; renderStage();
     } else if (action === "review-annotated") {
       const editor = $("#reviewEditor");
       if (editor && state.rewriteDirty) {
-        await saveFile("voiceover", `# 最终口播稿\n\n${editor.value.trim()}\n`);
+        await saveFile("voiceover", `# 最终口播稿\n\n${formatCorrectedDraft(editor.value)}\n`);
         state.rewriteDirty = false;
       }
       state.reviewMode = "annotated"; renderStage();
@@ -867,13 +1004,17 @@ async function handleStageAction(action) {
       const opening = state.workspace.openingOptions.find((item) => item.selected);
       const ending = state.workspace.endingOptions.find((item) => item.selected);
       if (!opening || !ending) return showToast("请先各选一个开头和结尾");
-      const complete = ($("#assembledEditor")?.value || state.workspace.assembledDraft || assembledText()).trim();
+      const complete = formatCorrectedDraft($("#assembledEditor")?.value || state.workspace.assembledDraft || assembledText());
       state.workspace.assembledDraft = complete;
       await saveFile("voiceover", `# 最终口播稿\n\n${complete}\n`);
       await saveWorkspace();
       renderStage();
       showToast(`完整定稿已保存 · ${textLength(complete)} 字`);
     } else if (action === "more-options") await runAIStage({ stageOverride: "openings", bypassPrompt: true });
+    else if (action === "toggle-scroll-sync") {
+      state.workspace.ui.syncScroll = state.workspace.ui.syncScroll === false;
+      await saveWorkspace(); renderStage(); showToast(state.workspace.ui.syncScroll ? "双栏已开启一键跟随" : "双栏已取消跟随");
+    }
     else if (action === "rewrite-notes" || action === "stage-instructions") openStagePrompt(state.activeStage);
     else if (action === "open-chat") openChat();
     else if (action === "selection-cancel") { state.selectionEdit = null; const panel = $("#selectionAssistant"); if (panel) panel.hidden = true; }
@@ -905,14 +1046,9 @@ async function learnFromProject() {
   state.ai.running = true;
   renderProjectHeader();
   try {
-    const data = await request("/api/ai/run", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        ...(sessionKey() ? { "X-AI-Api-Key": sessionKey() } : {}),
-        ...(searchKey() ? { "X-Search-Api-Key": searchKey() } : {})
-      },
-      body: JSON.stringify({ provider: selectedProvider(), stage: "learn", model: selectedModel(), payload })
+    const data = await requestAIStream({ provider: selectedProvider(), stage: "learn", model: selectedModel(), payload }, (event) => {
+      const button = $('[data-action="learn-project"]');
+      if (button) button.textContent = `${Number(event.percent) || 0}% · 正在分析`;
     });
     state.workspace.learningCandidates = (data.result.preferences || []).map((text) => ({ text, selected: true }));
     state.workspace.learningSummary = data.result.summary || "";
@@ -1088,13 +1224,10 @@ async function verifyFactEvidence(button) {
   const originalText = button.textContent;
   button.textContent = "AI 正在阅读来源正文…";
   try {
-    const data = await request("/api/ai/run", {
-      method: "POST",
-      body: JSON.stringify({
-        provider: selectedProvider(), stage: "verify", model: selectedModel(),
-        payload: { claim: item.claim, sources: item.sources, settings: state.workspace.settings }
-      })
-    });
+    const data = await requestAIStream({
+      provider: selectedProvider(), stage: "verify", model: selectedModel(),
+      payload: { claim: item.claim, sources: item.sources, settings: state.workspace.settings }
+    }, (event) => { button.textContent = `${Number(event.percent) || 0}% · ${event.label || "验证中"}`; });
     item.verdict = data.result.verdict;
     item.verdictReasoning = data.result.reasoning;
     item.correctStatement = data.result.correctStatement || "";
@@ -1202,14 +1335,8 @@ async function sendChat(message) {
       sources: reviewItem.sources || [], suggestion: reviewItem.suggestion || "",
       reviewConversation: reviewItem.reviewConversation.slice(-12)
     } : { ...currentAIPayload(), message: text, currentStage: state.activeStage, conversation: state.workspace.conversation.slice(-20) };
-    const data = await request("/api/ai/run", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        ...(sessionKey() ? { "X-AI-Api-Key": sessionKey() } : {}),
-        ...(searchKey() ? { "X-Search-Api-Key": searchKey() } : {})
-      },
-      body: JSON.stringify({ provider: selectedProvider(), stage: reviewItem ? "suggestion" : "chat", model: selectedModel(), payload })
+    const data = await requestAIStream({ provider: selectedProvider(), stage: reviewItem ? "suggestion" : "chat", model: selectedModel(), payload }, (event) => {
+      els.sendChatButton.textContent = `${Number(event.percent) || 0}%`;
     });
     if (reviewItem) {
       reviewItem.suggestion = String(data.result.suggestion || reviewItem.suggestion).trim();
@@ -1237,7 +1364,7 @@ function scheduleMetadata(delay = 1600) {
 async function generateProjectMetadata(sourceText) {
   if (state.metadataRunning || !state.project || !/^未命名口播稿/.test(state.project.title)) return;
   const projectId = state.project.id;
-  const originalContent = withSourceBody(state.project.files.original.content, sourceText);
+  const originalContent = withSourceDetails(state.project.files.original.content, { ...sourceDetails(state.project.files.original.content), ...sourceEditorDetails(), body: sourceText });
   const workspace = structuredClone(state.workspace);
   state.metadataRunning = true;
   els.saveState.textContent = "AI 正在识别标题与领域…";
@@ -1245,18 +1372,10 @@ async function generateProjectMetadata(sourceText) {
     await request(`/api/projects/${encodeURIComponent(projectId)}/files/original`, {
       method: "PUT", body: JSON.stringify({ content: originalContent })
     });
-    const data = await request("/api/ai/run", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        ...(sessionKey() ? { "X-AI-Api-Key": sessionKey() } : {}),
-        ...(searchKey() ? { "X-Search-Api-Key": searchKey() } : {})
-      },
-      body: JSON.stringify({
-        provider: selectedProvider(), stage: "metadata", model: selectedModel(),
-        payload: { source: sourceText, settings: workspace.settings }
-      })
-    });
+    const data = await requestAIStream({
+      provider: selectedProvider(), stage: "metadata", model: selectedModel(),
+      payload: { source: sourceText, settings: workspace.settings }
+    }, (event) => { els.saveState.textContent = `${Number(event.percent) || 0}% · ${event.label || "正在识别"}`; });
     const title = String(data.result.title || "").replace(/[《》“”"'！!。]/g, "").trim().slice(0, 28) || "未命名口播稿";
     workspace.metadata = {
       domain: data.result.domain || "其他",
@@ -1320,8 +1439,8 @@ function currentAIPayload() {
     ? stripHeading(state.project.files.voiceover.content)
     : isMeaningful(state.project.files.styled.content) ? stripHeading(state.project.files.styled.content) : corrected);
   return {
-    source, corrected, draft, settings: state.workspace.settings,
-    conversation: state.workspace.conversation || [], projectMemory: state.workspace.projectMemory || {}
+    source, corrected, draft: formatCorrectedDraft(draft), settings: state.workspace.settings,
+    conversation: state.workspace.conversation || [], activityLog: (state.workspace.activityLog || []).slice(-30), projectMemory: state.workspace.projectMemory || {}
   };
 }
 
@@ -1332,18 +1451,19 @@ function withIds(items, prefix) {
 async function applyAIResult(stage, result) {
   if (stage === "source") {
     if (state.sourceDirty) {
-      await saveFile("original", withSourceBody(state.project.files.original.content, $("#sourceEditor").value));
+      await saveFile("original", withSourceDetails(state.project.files.original.content, sourceEditorDetails()));
       state.sourceDirty = false;
     }
     const corrected = formatCorrectedDraft(result.corrected);
     await saveFile("corrected", `# 整理后的原始稿\n\n${corrected}\n`);
   } else if (stage === "rewrite") {
-    await saveFile("voiceover", `# 最终口播稿\n\n${result.rewrite.trim()}\n`);
-    state.workspace.bodyDraft = result.rewrite.trim();
+    const body = formatCorrectedDraft(result.rewrite);
+    await saveFile("voiceover", `# 最终口播稿\n\n${body}\n`);
+    state.workspace.bodyDraft = body;
     await saveWorkspace();
     state.rewriteDirty = false;
   } else if (stage === "openings") {
-    state.workspace.openingBody = String(result.body || "").trim();
+    state.workspace.openingBody = formatCorrectedDraft(result.body || "");
     state.workspace.assembledDraft = "";
     state.workspace.openingOptions = withIds(result.openings, "opening").map(({ status, ...item }) => ({ ...item, selected: false }));
     state.workspace.endingOptions = withIds(result.endings, "ending").map(({ status, ...item }) => ({ ...item, selected: false }));
@@ -1376,7 +1496,9 @@ async function runAIStage({ stageOverride, bypassPrompt = false } = {}) {
   state.ai.running = true;
   clearInterval(aiProgressTimer);
   const startedAt = Date.now();
-  setAIProgress({ stage: effectiveStage, status: "running", percent: 8, elapsed: 0, label: "正在准备稿件", detail: "已检查当前文本与本环节要求" });
+  const activity = appendActivity({ type: "ai", stage: effectiveStage, status: "running", label: stageActionLabel(effectiveStage), instruction: state.workspace.settings.stageInstructions?.[effectiveStage] || "" });
+  await saveWorkspace();
+  setAIProgress({ stage: effectiveStage, status: "running", percent: 0, elapsed: 0, label: "正在发送请求", detail: "等待服务端确认" });
   aiProgressTimer = setInterval(() => {
     if (!state.ai.progress || state.ai.progress.status !== "running") return;
     state.ai.progress.elapsed = Math.floor((Date.now() - startedAt) / 1000);
@@ -1389,17 +1511,6 @@ async function runAIStage({ stageOverride, bypassPrompt = false } = {}) {
     let rewriteInfo = null;
     for (let stageIndex = 0; stageIndex < stages.length; stageIndex += 1) {
       const stage = stages[stageIndex];
-      const progressLabels = {
-        source: ["正在调用 AI 整理原稿", "只纠错、断句和重组大段落"],
-        rewrite: ["正在调用 AI 重构稿件", "模型可能会再次校准字数，用时会更长"],
-        openings: ["正在生成开头和结尾", "同时剥离旧首尾，保留中间正文"],
-        facts: ["正在核验事实并检索来源", "会识别事实点，并尝试读取政府、高校和博物馆来源"],
-        compliance: ["正在检查违禁词与风险表达", "结合全文语境给出替换建议"],
-        publish: ["正在生成发布素材", "生成标题、描述、标签、互动话术和易读错词"]
-      };
-      const [label, detail] = progressLabels[stage];
-      const requestPercent = effectiveStage === "review" ? (stageIndex === 0 ? 22 : 62) : 32;
-      setAIProgress({ label, detail, percent: requestPercent });
       const stagePayload = effectiveStage === "review" ? {
         ...payload,
         settings: {
@@ -1407,14 +1518,11 @@ async function runAIStage({ stageOverride, bypassPrompt = false } = {}) {
           stageInstructions: { ...(payload.settings.stageInstructions || {}), [stage]: payload.settings.stageInstructions?.review || "" }
         }
       } : payload;
-      const data = await request("/api/ai/run", {
-        method: "POST",
-        headers: {
-        "Content-Type": "application/json",
-        ...(sessionKey() ? { "X-AI-Api-Key": sessionKey() } : {}),
-        ...(searchKey() ? { "X-Search-Api-Key": searchKey() } : {})
-      },
-        body: JSON.stringify({ provider: selectedProvider(), stage, model: selectedModel(), payload: stagePayload })
+      const data = await requestAIStream({ provider: selectedProvider(), stage, model: selectedModel(), payload: stagePayload }, (event) => {
+        const percent = effectiveStage === "review"
+          ? Math.round(((stageIndex + (Number(event.percent) || 0) / 100) / stages.length) * 100)
+          : Number(event.percent) || 0;
+        setAIProgress({ percent, label: event.label, detail: event.detail });
       });
       setAIProgress({
         label: stage === "facts" ? "事实核验已返回，正在保存" : stage === "compliance" ? "风险检查已返回，正在保存" : "AI 已返回，正在保存结果",
@@ -1426,6 +1534,8 @@ async function runAIStage({ stageOverride, bypassPrompt = false } = {}) {
       if (stage === "rewrite") rewriteInfo = data;
     }
     setAIProgress({ status: "complete", percent: 100, label: "AI 处理完成", detail: "结果已保存，可以继续修改或重新生成", elapsed: Math.floor((Date.now() - startedAt) / 1000) });
+    Object.assign(activity, { status: "complete", completedAt: new Date().toISOString(), elapsed: Math.floor((Date.now() - startedAt) / 1000), tokens: totalTokens });
+    await saveWorkspace();
     renderProject();
     if (rewriteInfo) {
       const target = Number(state.workspace.settings.targetLength) || 1800;
@@ -1433,6 +1543,8 @@ async function runAIStage({ stageOverride, bypassPrompt = false } = {}) {
       showToast(`改写完成：${finalLength} 字，目标 ${target} 字${rewriteInfo.adjustedToTarget ? " · 已自动校准" : ""}`);
     } else showToast(`AI 已完成${totalTokens ? ` · ${totalTokens} tokens` : ""}`);
   } catch (error) {
+    Object.assign(activity, { status: "error", completedAt: new Date().toISOString(), error: error.message });
+    await saveWorkspace().catch(() => {});
     setAIProgress({ status: "error", label: "AI 处理未完成", detail: error.message, elapsed: Math.floor((Date.now() - startedAt) / 1000) });
     showToast(error.message);
     if (/API Key|Incorrect API key|401/i.test(error.message)) openAISettings();
@@ -1600,7 +1712,16 @@ $("#saveResultButton").addEventListener("click", async () => {
   await saveFile("voiceover", els.resultEditor.value); els.editorDialog.close(); renderStage(); showToast("成稿已保存");
 });
 $("#newProjectButton").addEventListener("click", createQuickProject);
-$("#mobileMenu").addEventListener("click", () => els.sidebar.classList.toggle("open"));
+$("#mobileMenu").addEventListener("click", () => {
+  if (matchMedia("(max-width: 760px)").matches) els.sidebar.classList.toggle("open");
+  else {
+    const shell = $(".app-shell");
+    shell.classList.toggle("sidebar-collapsed");
+    const collapsed = shell.classList.contains("sidebar-collapsed");
+    localStorage.setItem("yanji-sidebar-collapsed", collapsed ? "1" : "0");
+    $("#mobileMenu").setAttribute("aria-label", collapsed ? "显示项目列表" : "隐藏项目列表");
+  }
+});
 $("#aiSettingsButton").addEventListener("click", openAISettings);
 $("#memoryButton").addEventListener("click", async () => {
   state.activeStage = "publish";
@@ -1700,6 +1821,10 @@ window.addEventListener("beforeunload", (event) => { if (state.sourceDirty || st
 
 async function init() {
   try {
+    if (localStorage.getItem("yanji-sidebar-collapsed") === "1") {
+      $(".app-shell").classList.add("sidebar-collapsed");
+      $("#mobileMenu").setAttribute("aria-label", "显示项目列表");
+    }
     const [aiStatus, memory] = await Promise.all([request("/api/ai/status"), request("/api/memory")]);
     state.ai = { ...state.ai, ...aiStatus };
     state.accountMemory = memory;

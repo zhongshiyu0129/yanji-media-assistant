@@ -133,6 +133,28 @@ async function api(request, response, url) {
     });
     return sendJson(response, 200, result);
   }
+  if (request.method === "POST" && url.pathname === "/api/ai/run-stream") {
+    const payload = await bodyJson(request);
+    response.writeHead(200, {
+      "Content-Type": "application/x-ndjson; charset=utf-8",
+      "Cache-Control": "no-cache, no-transform",
+      "Connection": "keep-alive"
+    });
+    const write = (event) => response.write(`${JSON.stringify(event)}\n`);
+    try {
+      const result = await ai.run({
+        apiKey: request.headers["x-ai-api-key"] || request.headers["x-openai-api-key"],
+        searchApiKey: request.headers["x-search-api-key"] || payload.searchApiKey,
+        provider: payload.provider, stage: payload.stage, model: payload.model, payload: payload.payload,
+        onProgress: (progress) => write({ type: "progress", ...progress })
+      });
+      write({ type: "result", data: result });
+    } catch (error) {
+      write({ type: "error", error: error.message || "AI 处理失败", status: error.statusCode || 500 });
+    }
+    response.end();
+    return;
+  }
   if (request.method === "GET" && url.pathname === "/api/projects") {
     return sendJson(response, 200, { projects: await store.list() });
   }
@@ -194,7 +216,8 @@ const server = http.createServer(async (request, response) => {
     else await staticFile(response, url);
   } catch (error) {
     console.error(error);
-    sendJson(response, error instanceof SyntaxError ? 400 : error.statusCode || 500, { error: error.message || "服务器错误" });
+    if (!response.headersSent) sendJson(response, error instanceof SyntaxError ? 400 : error.statusCode || 500, { error: error.message || "服务器错误" });
+    else response.end();
   }
 });
 

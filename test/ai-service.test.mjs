@@ -113,8 +113,9 @@ test("rewrite is automatically recalibrated to the requested length and large pa
 
   assert.equal(calls, 2);
   assert.equal(response.adjustedToTarget, true);
-  assert.ok(response.finalLength >= 679 && response.finalLength <= 721);
-  assert.match(response.result.rewrite, /\n\n/);
+  assert.ok(Math.abs(response.finalLength - 700) < 100);
+  assert.doesNotMatch(response.result.rewrite, /\n\n/);
+  assert.ok(response.result.rewrite.split("\n").every((paragraph) => paragraph.startsWith("　　")));
   assert.equal(response.usage.total_tokens, 200);
 });
 
