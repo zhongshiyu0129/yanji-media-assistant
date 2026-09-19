@@ -163,3 +163,21 @@ test("selected-text edit returns an in-place replacement", async (context) => {
   const response = await service.run({ apiKey: "test-key", provider: "deepseek", stage: "selection", payload: { before: "前文", selected: "八旗只是一支由八种旗色组成的军队。", after: "后文", message: "缩短" } });
   assert.equal(response.result.replacement, "八旗不只是一支军队。");
 });
+
+test("source review removes topic-only search results", async (context) => {
+  const originalFetch = global.fetch;
+  context.after(() => { global.fetch = originalFetch; });
+  global.fetch = async () => new Response(JSON.stringify({
+    model: "deepseek-flash",
+    choices: [{ message: { content: '{"answer":"只有第二条直接证明改姓关系。","selected":[{"index":1,"relation":"supports","reason":"正文明确写出瓜尔佳氏改用关姓"}]}' } }]
+  }), { status: 200, headers: { "Content-Type": "application/json" } });
+  const service = createAIService("/tmp/yanji-missing-context");
+  const response = await service.run({
+    apiKey: "test-key", provider: "deepseek", stage: "sourceReview",
+    payload: {
+      claim: "瓜尔佳氏后来大多改姓关", query: "瓜尔佳氏 改姓 关",
+      sources: [{ title: "鳌拜生平", excerpt: "鳌拜是清初大臣" }, { title: "满族姓名", evidence: { highlight: "瓜尔佳氏后来多改用关姓" } }]
+    }
+  });
+  assert.deepEqual(response.result.selected.map((item) => item.index), [1]);
+});

@@ -370,13 +370,18 @@ async function searchOneText(text, serperKey, fallbackKind) {
 }
 
 export async function searchWebSources(query, options = {}) {
-  // 支持单个查询或多个查询（fan-out）
+  // 像带联网检索的研究助手一样：保留原问法，同时用实体化问法交叉检索。
+  // 单一口语句往往会带来同名、营销页或断章结果，不能只靠一次关键词匹配。
   const rawList = Array.isArray(query)
     ? query.filter(Boolean)
     : [query, ...(Array.isArray(options.queries) ? options.queries.filter(Boolean) : [])].filter(Boolean);
   if (!rawList.length) return [];
 
-  const textList = [...new Set(rawList.map((q) => evidenceQuery(q)).filter(Boolean))];
+  const textList = [...new Set(rawList.flatMap((q) => {
+    const original = String(q).replace(/\s+/gu, " ").trim();
+    const focused = evidenceQuery(original);
+    return [original, focused, focused ? `${focused} 资料` : ""];
+  }).filter(Boolean))].slice(0, 6);
   if (!textList.length) return [];
   const primaryText = textList[0];
   const serperKey = options.serperApiKey || options.searchApiKey || process.env.SERPER_API_KEY || "";
@@ -416,12 +421,14 @@ export async function searchWebSources(query, options = {}) {
     } catch { /* ignore invalid items */ }
   }
   trusted.sort((a, b) => b.relevanceScore - a.relevanceScore);
-  const top = trusted.slice(0, 3);
-  for (let i = 0; i < Math.min(top.length, 2); i += 1) {
+  const candidates = trusted.slice(0, 6);
+  const verified = [];
+  for (let i = 0; i < candidates.length; i += 1) {
+    const candidate = candidates[i];
     try {
-      const preview = await fetchSourcePreview({ url: top[i].url, query: top[i].matchedQuery || primaryText, excerpt: top[i].excerpt || "" });
+      const preview = await fetchSourcePreview({ url: candidate.url, query: candidate.matchedQuery || primaryText, excerpt: candidate.excerpt || "" });
       if (preview?.matched && preview.highlight) {
-        top[i].evidence = {
+        candidate.evidence = {
           title: preview.title,
           url: preview.url,
           before: preview.before || "",
@@ -430,11 +437,15 @@ export async function searchWebSources(query, options = {}) {
           matched: true,
           cachedAt: new Date().toISOString()
         };
+        candidate.relevanceScore += 6;
       }
     } catch { /* 证据缓存失败不影响搜索结果 */ }
-    if (i < Math.min(top.length, 2) - 1) await sleep(600);
+    verified.push(candidate);
+    if (i < candidates.length - 1) await sleep(350);
   }
-  return top;
+  // 只返回正文中确实覆盖多个检索要点的来源。宁可返回空，也不拿标题相关冒充证据。
+  verified.sort((a, b) => Number(Boolean(b.evidence?.matched)) - Number(Boolean(a.evidence?.matched)) || b.relevanceScore - a.relevanceScore);
+  return verified.filter((item) => item.evidence?.matched).slice(0, 3);
 }
 
 function isPrivateAddress(address) {
@@ -506,9 +517,11 @@ function pageText(html) {
 }
 
 function locate(text, query, excerpt) {
-  const hints = [excerpt, ...String(query || "").split(/[，。！？；：、,.!?;:\s]+/u)]
+  const queryTerms = [...new Set(String(query || "").split(/[，。！？；：、,.!?;:\s]+/u).map((term) => term.trim()).filter((term) => term.length >= 2))];
+  const requiredTermHits = Math.min(2, queryTerms.length);
+  const hints = [excerpt]
     .map((item) => String(item || "").trim())
-    .filter((item) => item.length >= 2)
+    .filter((item) => item.length >= 12 && queryTerms.filter((term) => item.includes(term)).length >= requiredTermHits)
     .sort((a, b) => b.length - a.length);
   for (const hint of hints) {
     let needle = hint;
@@ -523,8 +536,17 @@ function locate(text, query, excerpt) {
       const start = paragraphStart >= nearbyStart ? paragraphStart + 1 : nearbyStart;
       const paragraphEnd = text.indexOf("\n", index + needle.length);
       const end = paragraphEnd >= 0 && paragraphEnd <= index + needle.length + 900 ? paragraphEnd : Math.min(text.length, index + needle.length + 620);
-      return { before: text.slice(start, index), highlight: text.slice(index, index + needle.length), after: text.slice(index + needle.length, end), matched: true };
+      return { before: text.slice(start, index), highlight: text.slice(index, index + needle.length), after: text.slice(index + needle.length, end), matched: true, matchReason: "搜索摘要可在网页正文中定位" };
     }
+  }
+  const windows = text.split("\n").map((line) => line.trim()).filter((line) => line.length >= 30);
+  let bestTermWindow = null;
+  for (const line of windows) {
+    const hits = queryTerms.filter((term) => line.includes(term));
+    if (!bestTermWindow || hits.length > bestTermWindow.hits.length) bestTermWindow = { line, hits };
+  }
+  if (requiredTermHits && bestTermWindow?.hits.length >= requiredTermHits) {
+    return { before: "", highlight: bestTermWindow.line.slice(0, 1200), after: "", matched: true, matchedTerms: bestTermWindow.hits, matchReason: `同一正文片段覆盖 ${bestTermWindow.hits.length} 个关键实体或关系词` };
   }
   const normalizedQuery = String(query || "").replace(/[\s，。！？；：、,.!?;:“”"'（）()《》·—-]/gu, "");
   const grams = [];
@@ -541,7 +563,7 @@ function locate(text, query, excerpt) {
     if (!bestLine || score > bestLine.score) bestLine = { line, score };
   }
   if (bestLine?.score >= 8) {
-    return { before: "", highlight: bestLine.line.slice(0, 1200), after: "", matched: true };
+    return { before: "", highlight: bestLine.line.slice(0, 1200), after: "", matched: false, matchReason: "只有局部字词重合，未达到证据门槛" };
   }
   let best = null;
   for (let start = 0; start < text.length; start += 90) {
@@ -554,10 +576,11 @@ function locate(text, query, excerpt) {
       before: text.slice(Math.max(0, best.start - 240), best.start),
       highlight: best.window,
       after: text.slice(best.start + best.window.length, best.start + best.window.length + 320),
-      matched: true
+      matched: false,
+      matchReason: "只有模糊片段重合，未达到证据门槛"
     };
   }
-  return { before: text.slice(0, 900), highlight: "", after: "", matched: false };
+  return { before: text.slice(0, 900), highlight: "", after: "", matched: false, matchReason: "网页正文未覆盖足够的检索要点" };
 }
 
 export async function fetchSourcePreview({ url, query = "", excerpt = "" }) {

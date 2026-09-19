@@ -113,13 +113,33 @@ async function api(request, response, url) {
   if (request.method === "POST" && url.pathname === "/api/source-search") {
     const payload = await bodyJson(request);
     const searchApiKey = request.headers["x-search-api-key"] || payload.searchApiKey;
-    return sendJson(response, 200, {
-      sources: await searchWebSources(payload.query, {
+    let sources = await searchWebSources(payload.query, {
         serperApiKey: searchApiKey,
         searchProvider: payload.searchProvider,
         queries: Array.isArray(payload.queries) ? payload.queries : []
-      })
-    });
+      });
+    let answer = "已按网页正文相关性筛选来源。";
+    const aiKey = request.headers["x-ai-api-key"] || request.headers["x-openai-api-key"];
+    if (sources.length && (aiKey || ai.status().configured)) {
+      try {
+        const reviewed = await ai.run({
+          apiKey: aiKey,
+          provider: payload.provider,
+          model: payload.model,
+          stage: "sourceReview",
+          payload: { claim: payload.claim || payload.query, query: payload.query, sources }
+        });
+        const selected = new Map((reviewed.result.selected || []).map((item) => [Number(item.index), item]));
+        sources = sources.flatMap((source, index) => {
+          const verdict = selected.get(index);
+          return verdict ? [{ ...source, aiRelation: verdict.relation, aiReason: verdict.reason }] : [];
+        });
+        answer = reviewed.result.answer || answer;
+      } catch (error) {
+        answer = `网页证据筛选已完成；AI 语义复核暂时失败：${error.message}`;
+      }
+    }
+    return sendJson(response, 200, { sources, answer });
   }
   if (request.method === "POST" && url.pathname === "/api/ai/run") {
     const payload = await bodyJson(request);

@@ -13,6 +13,8 @@ const state = {
   accountMemory: { preferences: [], learningHistory: [] },
   reviewChatTarget: null,
   selectionEdit: null,
+  selectionProposal: null,
+  selectionUndo: null,
   selectionRunning: false,
   chatRunning: false,
   sourceSearches: {}, syncScrolling: false,
@@ -166,21 +168,29 @@ function formatCorrectedDraft(value = "") {
 
 function sourceBody(value = "") {
   const match = value.match(/##\s*原文\s*\n+([\s\S]*?)(?=\n##\s|$)/u);
-  const body = match?.[1]?.trim() || "";
-  return body === "请在这里粘贴需要处理的原稿。" ? "" : body;
+  const raw = match?.[1] || value.replace(/^#\s*原始口播稿\s*$/gmu, "").replace(/^##\s*标题\s*\n+[^\n]*$/gmu, "");
+  const body = raw
+    .replace(/^##\s*来源备注[\s\S]*?(?=^##\s|$)/gmu, "")
+    .replace(/^##\s*本项目要求[\s\S]*$/gmu, "")
+    .replace(/^\s*-\s*(来源平台|作者|链接)：.*$/gmu, "")
+    .trim();
+  return body === "请在这里粘贴需要处理的原稿。" || /^#?\s*原始口播稿\s*$/u.test(body) ? "" : body;
 }
 
 function sourceDetails(value = "") {
   const field = (label) => value.match(new RegExp(`^-\\s*${label}：?\\s*(.*)$`, "mu"))?.[1]?.trim() || "";
   return {
-    title: value.match(/##\s*标题\s*\n+([^\n]*)/u)?.[1]?.trim() || "",
+    title: (value.match(/##\s*标题\s*\n+([^\n]*)/u)?.[1]?.trim() || "").replace(/^未命名口播稿$/u, ""),
     platform: field("来源平台"), author: field("作者"), url: field("链接"), body: sourceBody(value)
   };
 }
 
 function withSourceDetails(markdownText = "", details = {}) {
-  const tail = markdownText.match(/\n##\s*本项目要求[\s\S]*$/u)?.[0] || "";
-  return `# 原始口播稿\n\n## 标题\n\n${String(details.title || "").trim()}\n\n## 来源备注\n\n- 来源平台：${String(details.platform || "").trim()}\n- 作者：${String(details.author || "").trim()}\n- 链接：${String(details.url || "").trim()}\n\n## 原文\n\n${String(details.body || "").trim()}${tail ? `\n${tail.trimStart()}` : "\n"}`;
+  const title = String(details.title || "").trim();
+  const notes = [["来源平台", details.platform], ["作者", details.author], ["链接", details.url]]
+    .filter(([, entry]) => String(entry || "").trim())
+    .map(([label, entry]) => `- ${label}：${String(entry).trim()}`);
+  return `# 原始口播稿${title ? `\n\n## 标题\n\n${title}` : ""}${notes.length ? `\n\n## 来源备注\n\n${notes.join("\n")}` : ""}\n\n## 原文\n\n${String(details.body || "").trim()}\n`;
 }
 
 function sourceEditorDetails() {
@@ -215,7 +225,7 @@ function defaultWorkspace() {
     metadata: { domain: "", tags: [], generated: false },
     openingOptions: [], endingOptions: [], factChecks: [], complianceIssues: [],
     publish: { titles: [], descriptions: [], tags: [], comments: [], pronunciations: [] },
-    conversation: [], activityLog: [], projectMemory: { notes: [] }, learningCandidates: [], decisions: {},
+    conversation: [], activityLog: [], selectionConversations: [], reviewArchiveOpen: false, projectMemory: { notes: [] }, learningCandidates: [], decisions: {},
     ui: { syncScroll: true, paneRatio: 50 }
   };
 }
@@ -234,6 +244,7 @@ function loadWorkspace(project) {
       publish: { ...defaults.publish, ...(parsed.publish || {}) },
       conversation: Array.isArray(parsed.conversation) ? parsed.conversation : [],
       activityLog: Array.isArray(parsed.activityLog) ? parsed.activityLog : [],
+      selectionConversations: Array.isArray(parsed.selectionConversations) ? parsed.selectionConversations : [],
       ui: { ...defaults.ui, ...(parsed.ui || {}) },
       decisions: parsed.decisions || {}
     };
@@ -372,13 +383,15 @@ function optionCards(items, type) {
 function assemblyBody() {
   if (String(state.workspace.openingBody || "").trim()) return state.workspace.openingBody.trim();
   const draft = String(state.workspace.bodyDraft || stripHeading(state.project.files.voiceover.content) || "").trim();
-  const paragraphs = draft.split(/\n\s*\n/u).map((part) => part.trim()).filter(Boolean);
+  const paragraphs = draft.split(/\n+/u).map((part) => part.trim()).filter(Boolean);
   // 旧项目没有单独保存“去掉首尾后的正文”。至少按大段边界剥离旧首尾，
   // 新生成的开头结尾会由 AI 明确返回 body，不再依赖这个兼容逻辑。
   if (paragraphs.length < 3) return draft;
   const openingSentences = [...paragraphs[0].matchAll(/[^。！？!?]+[。！？!?]?/gu)].map((match) => match[0].trim()).filter(Boolean);
   const firstBody = openingSentences.length >= 5 ? openingSentences.slice(2).join("") : paragraphs[0];
-  return [firstBody, ...paragraphs.slice(1, -1)].filter(Boolean).join("\n\n");
+  const endingSentences = [...paragraphs.at(-1).matchAll(/[^。！？!?]+[。！？!?]?/gu)].map((match) => match[0].trim()).filter(Boolean);
+  const lastBody = endingSentences.length >= 5 ? endingSentences.slice(0, -2).join("") : paragraphs.at(-1);
+  return [firstBody, ...paragraphs.slice(1, -1), lastBody].filter(Boolean).join("\n");
 }
 
 function assembledText() {
@@ -406,8 +419,13 @@ function replacementDiffMarkup(opening, ending) {
   if (!opening && !ending) return "";
   const draft = String(state.workspace.bodyDraft || stripHeading(state.project.files.voiceover.content) || "").trim();
   const paragraphs = draft.split(/\n+/u).map((part) => part.trim()).filter(Boolean);
-  const oldOpening = paragraphs[0] || "原开头";
-  const oldEnding = paragraphs.at(-1) || "原结尾";
+  const edge = (text, position) => {
+    const sentences = [...text.matchAll(/[^。！？!?]+[。！？!?]?/gu)].map((match) => match[0].trim()).filter(Boolean);
+    if (sentences.length <= 3) return text;
+    return (position === "start" ? sentences.slice(0, 2) : sentences.slice(-2)).join("");
+  };
+  const oldOpening = edge(paragraphs[0] || "原开头", "start");
+  const oldEnding = edge(paragraphs.at(-1) || "原结尾", "end");
   return `<section class="replacement-diff"><header><b>首尾替换记录</b><span>旧内容保留划线，方便回看</span></header>
     ${opening ? `<p><em>开头</em><del>${escapeHtml(oldOpening)}</del><i>→</i><ins>${escapeHtml(opening.text)}</ins></p>` : ""}
     ${ending ? `<p><em>结尾</em><del>${escapeHtml(oldEnding)}</del><i>→</i><ins>${escapeHtml(ending.text)}</ins></p>` : ""}
@@ -513,29 +531,40 @@ function reviewStage() {
   const manuscript = isMeaningful(state.project.files.voiceover.content) ? stripHeading(state.project.files.voiceover.content) : "";
   const facts = state.workspace.factChecks || [];
   const risks = state.workspace.complianceIssues || [];
+  const activeFacts = facts.filter((item) => item.status === "pending");
+  const activeRisks = risks.filter((item) => item.status === "pending");
+  const archived = [...facts.filter((item) => item.status !== "pending").map((item) => ({ ...item, kind: "fact" })), ...risks.filter((item) => item.status !== "pending").map((item) => ({ ...item, kind: "compliance" }))];
   const resolved = [...facts, ...risks].filter((item) => item.status !== "pending").length;
-  const missingSourceCount = facts.filter((item) => !item.sources?.length).length;
-  const factContent = facts.length ? facts.map((item, index) => `
+  const factContent = activeFacts.length ? activeFacts.map((item, index) => `
     <article class="review-card ${item.status !== "pending" ? "resolved" : ""}" data-review-card="fact:${escapeHtml(item.id)}">
       <div class="review-top"><div><span class="review-index">F${index + 1}</span><span class="level-badge ${item.level}">${item.level === "must" ? "必须修改" : item.level === "recommended" ? "建议修改" : "可以保留"}</span></div><div class="confidence ${confidenceClass(item.confidence)}"><span>置信度</span><b>${item.confidence}%</b><i><u style="width:${item.confidence}%"></u></i></div></div>
       <blockquote>${escapeHtml(item.claim)}</blockquote><p class="fact-summary">${escapeHtml(item.summary)}</p>${verdictBadge(item)}
-      <div class="suggestion"><div><span>建议改成</span><small>选中文字即可让 AI 修改</small></div><textarea data-suggestion-edit="fact" data-id="${escapeHtml(item.id)}" aria-label="编辑事实核验建议">${escapeHtml(item.suggestion)}</textarea></div>
-      <footer><div class="source-query-row"><label>检索词</label><input type="text" class="source-query-input" data-source-query data-id="${escapeHtml(item.id)}" value="${escapeHtml(item.sourceQuery || "")}" placeholder="AI 提炼的关键词，可手动修改后重搜" spellcheck="false"><button class="source-query-search" data-source-search data-id="${escapeHtml(item.id)}" title="用当前检索词搜索权威来源">⌕ 搜索</button></div>${sourceSearchStatus(item)}<div class="source-footer-row"><div class="source-links">${item.sources?.length ? item.sources.map((source, sourceIndex) => `<button data-source-preview data-kind="fact" data-id="${escapeHtml(item.id)}" data-source-index="${sourceIndex}" data-url="${escapeHtml(source.url)}" data-title="${escapeHtml(source.title)}" data-query="${escapeHtml(item.claim)}" data-excerpt="${escapeHtml(source.excerpt || "")}">▣ ${source.evidence ? "已缓存证据" : "预览并定位"}：${escapeHtml(source.title)}</button>`).join("") + `<button class="ai-verify-button" data-ai-verify data-id="${escapeHtml(item.id)}" title="让 AI 阅读来源正文，判断证据是否支持该断言">⚖ ${item.verdict ? "重新验证" : "AI 验证证据"}</button>` : `<span class="source-empty-hint">暂无可靠来源，修改检索词后点搜索，或考虑删除这条断言</span>`}</div><div class="decision-actions"><button class="${item.status === "pending" ? "selected-decision" : ""}" data-review="fact" data-id="${item.id}" data-status="pending">重新考虑</button><button class="${item.status === "kept" ? "selected-decision" : ""}" data-review="fact" data-id="${item.id}" data-status="kept">仍然保留</button><button class="accept ${item.status === "accepted" ? "selected-decision" : ""}" data-review="fact" data-id="${item.id}" data-status="accepted">接受并替换</button></div></div></footer>
+      <div class="suggestion"><div><span>建议改成</span><small>可手动调整，也可选中其中一段再让 AI 改写</small></div><textarea data-suggestion-edit="fact" data-id="${escapeHtml(item.id)}" aria-label="编辑事实核验建议">${escapeHtml(item.suggestion)}</textarea></div>
+      <footer><div class="source-query-row"><label>检索词</label><input type="text" class="source-query-input" data-source-query data-id="${escapeHtml(item.id)}" value="${escapeHtml(item.sourceQuery || "")}" placeholder="输入关键词后搜索公开来源" spellcheck="false"><button class="source-query-search" data-source-search data-id="${escapeHtml(item.id)}" title="搜索可供核对的公开来源">⌕ 搜索</button></div><p class="review-help">“搜索”会按检索词找公开来源；“AI 验证证据”会读取已找到的来源，判断它是否支持这条说法。</p>${sourceSearchStatus(item)}<div class="source-footer-row"><div class="source-links">${item.sources?.length ? item.sources.map((source, sourceIndex) => `<button data-source-preview data-kind="fact" data-id="${escapeHtml(item.id)}" data-source-index="${sourceIndex}" data-url="${escapeHtml(source.url)}" data-title="${escapeHtml(source.title)}" data-query="${escapeHtml(item.claim)}" data-excerpt="${escapeHtml(source.excerpt || "")}">▣ ${source.evidence ? "已缓存证据" : "预览并定位"}：${escapeHtml(source.title)}</button>`).join("") + `<button class="ai-verify-button" data-ai-verify data-id="${escapeHtml(item.id)}" title="根据已找到的来源判断这条说法">⚖ ${item.verdict ? "重新验证证据" : "AI 验证证据"}</button>` : `<span class="source-empty-hint">暂无可靠来源，可改检索词后再搜索。</span>`}</div><div class="decision-actions"><button data-review="fact" data-id="${item.id}" data-status="kept">仍然保留</button><button class="accept" data-review="fact" data-id="${item.id}" data-status="accepted">接受并替换</button></div></div></footer>
     </article>`).join("") : '<div class="empty-list">点击右上角“检查整合稿”后，事实判断会显示在这里。</div>';
-  const riskContent = risks.length ? risks.map((item, index) => `
-    <article class="compliance-item ${item.status !== "pending" ? "resolved" : ""}" data-review-card="compliance:${escapeHtml(item.id)}"><div class="risk-marker ${item.severity}">R${index + 1}</div><div class="risk-content"><div><span>${escapeHtml(item.category)}</span><em>${item.severity === "high" ? "高风险" : "中风险"}</em></div><p class="replacement"><del>${escapeHtml(item.original)}</del><i>→</i><span>建议表达 · 选中文字可让 AI 修改</span></p><div class="risk-suggestion"><textarea data-suggestion-edit="compliance" data-id="${escapeHtml(item.id)}" aria-label="编辑风险表达建议">${escapeHtml(item.suggestion)}</textarea></div><small>${escapeHtml(item.reason)}</small></div><div class="decision-actions"><button class="${item.status === "pending" ? "selected-decision" : ""}" data-review="compliance" data-id="${item.id}" data-status="pending">重新考虑</button><button class="${item.status === "kept" ? "selected-decision" : ""}" data-review="compliance" data-id="${item.id}" data-status="kept">不改</button><button class="accept ${item.status === "accepted" ? "selected-decision" : ""}" data-review="compliance" data-id="${item.id}" data-status="accepted">接受并替换</button></div></article>`).join("") : '<div class="empty-list">完成整合稿后，风险表达会结合全文显示在这里。</div>';
+  const riskContent = activeRisks.length ? activeRisks.map((item, index) => `
+    <article class="compliance-item ${item.status !== "pending" ? "resolved" : ""}" data-review-card="compliance:${escapeHtml(item.id)}"><div class="risk-marker ${item.severity}">R${index + 1}</div><div class="risk-content"><div><span>${escapeHtml(item.category)}</span><em>${item.severity === "high" ? "高风险" : "中风险"}</em></div><p class="replacement"><del>${escapeHtml(item.original)}</del><i>→</i><span>建议表达 · 可选中再交给 AI 修改</span></p><div class="risk-suggestion"><textarea data-suggestion-edit="compliance" data-id="${escapeHtml(item.id)}" aria-label="编辑风险表达建议">${escapeHtml(item.suggestion)}</textarea></div><small>${escapeHtml(item.reason)}</small></div><div class="decision-actions"><button data-review="compliance" data-id="${item.id}" data-status="kept">仍然保留</button><button class="accept" data-review="compliance" data-id="${item.id}" data-status="accepted">接受并替换</button></div></article>`).join("") : '<div class="empty-list">完成整合稿后，风险表达会结合全文显示在这里。</div>';
+  const archiveMarkup = archived.length ? `<section class="review-archive"><button data-action="toggle-review-archive">${state.workspace.reviewArchiveOpen ? "收起" : "查看"}已处理记录（${archived.length}）</button>${state.workspace.reviewArchiveOpen ? `<div>${archived.map((item) => `<article><span>${item.kind === "fact" ? "事实" : "风险"} · ${item.status === "accepted" ? "已接受" : "已保留"}</span><p>${escapeHtml(item.claim || item.original)}</p><button data-review="${item.kind}" data-id="${item.id}" data-status="pending">重新考虑</button></article>`).join("")}</div>` : ""}</section>` : "";
+  const journey = [
+    ["原始稿", sourceBody(state.project.files.original.content)],
+    ["整理稿", stripHeading(state.project.files.corrected.content)],
+    ["当前完整稿", manuscript]
+  ].filter(([, text]) => String(text || "").trim());
+  const journeyMarkup = `<section class="revision-journey"><header><div><b>本篇修改全程</b><span>从原文到当前全文，随项目一起保存</span></div></header>${journey.map(([label, text], index) => `<details ${index === journey.length - 1 ? "open" : ""}><summary><span>${index + 1}</span>${label}<em>${textLength(text)} 字</em></summary><p>${escapeHtml(text)}</p></details>`).join("") || '<div class="empty-list">保存原文后，会在这里留下版本历程。</div>'}</section>`;
   return `
-    <div class="stage-heading"><div><span>STEP 04</span><h2>在整合好的稿件上做全文审校</h2><p>左边始终保留完整上下文；右边同时看事实来源和风险表达，接受建议会直接替换到成稿。</p></div><div class="review-heading-actions">${missingSourceCount ? `<button class="small-button source-batch-button" data-action="search-all-sources">⌕ 为 ${missingSourceCount} 条核验补来源</button>` : ""}<div class="review-progress"><b>${resolved}/${facts.length + risks.length}</b><span>已处理</span></div></div></div>
+    <div class="stage-heading"><div><span>STEP 04</span><h2>在整合好的稿件上做全文审校</h2><p>左边始终保留完整上下文；右边同时看事实来源和风险表达，接受建议会直接替换到成稿。</p></div><div class="review-heading-actions">${activeFacts.length ? `<button class="small-button source-batch-button" data-action="search-all-sources">⌕ 重新检索全部事实来源</button>` : ""}<div class="review-progress"><b>${resolved}/${facts.length + risks.length}</b><span>已处理</span></div></div></div>
     ${stageControlsMarkup()}
     <div class="review-legend"><span><i class="must"></i>必须修改</span><span><i class="recommended"></i>建议修改</span><span><i class="optional"></i>可保留表达</span><em>置信度是证据支持程度，不是绝对真伪。</em></div>
     ${compareToolsMarkup()}
     <div class="review-workbench" style="--pane-left:${Number(state.workspace.ui?.paneRatio) || 50}%">
       <article class="editor-box review-manuscript"><header><div><b>整合后的完整稿件</b><span>悬停标记即可对应右侧建议</span></div><div class="review-view-switch"><button class="${state.reviewMode === "annotated" ? "active" : ""}" data-action="review-annotated">标注阅读</button><button class="${state.reviewMode === "edit" ? "active" : ""}" data-action="review-edit">手动修改</button><em id="reviewCount">${textLength(manuscript)} 字</em></div></header>${state.reviewMode === "edit" ? `<textarea id="reviewEditor" spellcheck="false" placeholder="请先在“开头结尾”中组合成稿…">${escapeHtml(manuscript)}</textarea>` : `<div class="annotated-copy" id="annotatedCopy">${annotatedManuscript(manuscript, facts, risks)}</div>`}<footer><span>黄色为事实点，红色为风险表达</span>${state.reviewMode === "edit" ? '<button data-action="save-review">保存全文</button>' : '<button data-action="review-edit">进入修改</button>'}</footer></article>
       <div class="workbench-resizer" data-resize-handle title="左右拖动调整宽度">↔</div><aside class="combined-review">
-        <section><div class="combined-review-title"><div><b>事实核验</b><span>来源、置信度与修改级别</span></div><em>${facts.length} 条</em></div><div class="review-list">${factContent}</div></section>
-        <section><div class="combined-review-title"><div><b>违禁词与风险表达</b><span>依据你提供的规则库，结合全文判断</span></div><em>${risks.length} 条</em></div><div class="source-note"><span>规则库</span><b>用户提供</b><p>平台规则会变化，建议仍以发布时官方规则为准。</p></div><div class="compliance-list">${riskContent}</div></section>
+        <section><div class="combined-review-title"><div><b>事实核验</b><span>来源、置信度与修改级别</span></div><em>${activeFacts.length} 条待处理</em></div><div class="review-list">${factContent}</div></section>
+        <section><div class="combined-review-title"><div><b>违禁词与风险表达</b><span>依据你提供的规则库，结合全文判断</span></div><em>${activeRisks.length} 条待处理</em></div><div class="source-note"><span>规则库</span><b>用户提供</b><p>平台规则会变化，建议仍以发布时官方规则为准。</p></div><div class="compliance-list">${riskContent}</div></section>
+        ${archiveMarkup}
       </aside>
-    </div>`;
+    </div>
+    ${journeyMarkup}`;
 }
 
 function selectableGroup(title, subtitle, type, items) {
@@ -635,9 +664,10 @@ function bindCompareWorkspace() {
   const container = $(".dual-editor, .review-workbench", els.stageContent);
   if (!container) return;
   let syncing = false;
+  const syncEnabled = () => state.activeStage === "review" ? state.workspace.ui?.reviewSyncScroll === true : state.workspace.ui?.syncScroll !== false;
   const candidates = $$("textarea, .readonly-copy, .annotated-copy, .combined-review", container).filter((node) => node.scrollHeight > node.clientHeight || node.tagName === "TEXTAREA");
   const sync = (source, target) => {
-    if (syncing || state.workspace.ui?.syncScroll === false || !target) return;
+    if (syncing || !syncEnabled() || !target) return;
     const sourceRange = Math.max(1, source.scrollHeight - source.clientHeight);
     const targetRange = Math.max(0, target.scrollHeight - target.clientHeight);
     syncing = true;
@@ -667,26 +697,64 @@ function bindCompareWorkspace() {
   });
 }
 
-function showSelectionAssistant(selection) {
+function selectionConversation(selection) {
+  state.workspace.selectionConversations ||= [];
+  const existing = state.workspace.selectionConversations.find((item) => item.id === selection.sessionId);
+  if (existing) return existing;
+  const next = { id: selection.sessionId || `selection-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`, selected: selection.selected, stage: state.activeStage, createdAt: new Date().toISOString(), messages: [] };
+  selection.sessionId = next.id;
+  state.workspace.selectionConversations.unshift(next);
+  state.workspace.selectionConversations = state.workspace.selectionConversations.slice(0, 40);
+  return next;
+}
+
+function showSelectionBubble(selection, anchor = null) {
   state.selectionEdit = selection;
-  const panel = $("#selectionAssistant");
-  const preview = $("#selectionPreview");
+  state.selectionProposal = null;
+  const bubble = $("#selectionBubble");
+  if (!bubble) return;
+  bubble.hidden = false;
+  const range = window.getSelection()?.rangeCount ? window.getSelection().getRangeAt(0) : null;
+  const rect = range?.getBoundingClientRect?.();
+  const left = rect?.width ? rect.right - 132 : (anchor?.clientX || Math.round(window.innerWidth * 0.62));
+  const top = rect?.width ? rect.bottom + 8 : (anchor?.clientY || Math.round(window.innerHeight * 0.55));
+  bubble.style.left = `${Math.min(window.innerWidth - 142, Math.max(12, left))}px`;
+  bubble.style.top = `${Math.min(window.innerHeight - 46, Math.max(12, top))}px`;
+}
+
+function openSelectionAssistant() {
+  const selection = state.selectionEdit;
+  if (!selection) return showToast("请先选中一段文字");
+  const panel = $("#selectionAssistant"), preview = $("#selectionPreview"), bubble = $("#selectionBubble");
   if (!panel || !preview) return;
+  selectionConversation(selection);
   preview.textContent = selection.selected.length > 180 ? `${selection.selected.slice(0, 180)}…` : selection.selected;
   panel.hidden = false;
-  $("#selectionStatus").textContent = `已选择 ${textLength(selection.selected)} 字，只替换这一处`;
+  if (bubble) bubble.hidden = true;
+  $("#selectionStatus").textContent = `已选择 ${textLength(selection.selected)} 字，先预览再决定是否放入正文`;
+  $("#selectionInstruction").value = "";
+  renderSelectionConversation();
+}
+
+function renderSelectionConversation() {
+  const box = $("#selectionConversation");
+  const session = state.selectionEdit && selectionConversation(state.selectionEdit);
+  if (!box || !session) return;
+  const renderMessages = (item) => item.messages.length ? item.messages.map((message) => `<p class="${message.role}"><b>${message.role === "user" ? "我" : "AI"}</b>${escapeHtml(message.text)}</p>`).join("") : "<p class=\"empty\">这段文字的改写记录会保存在这里。</p>";
+  const earlier = (state.workspace.selectionConversations || []).filter((item) => item.id !== session.id);
+  box.innerHTML = `<div class="selection-current"><b>当前选区</b>${renderMessages(session)}</div>${earlier.length ? `<details class="selection-earlier"><summary>之前的选区会话（${earlier.length}）</summary>${earlier.map((item) => `<article><blockquote>${escapeHtml(item.selected.slice(0, 88))}${item.selected.length > 88 ? "…" : ""}</blockquote>${renderMessages(item)}</article>`).join("")}</details>` : ""}`;
 }
 
 function bindSelectionEditing() {
   $$("textarea:not(#selectionInstruction)", els.stageContent).forEach((editor) => {
-    const capture = () => {
+    const capture = (event) => {
       const start = editor.selectionStart;
       const end = editor.selectionEnd;
       if (!Number.isInteger(start) || end - start < 2) return;
-      showSelectionAssistant({ type: "editor", editor, start, end, selected: editor.value.slice(start, end), before: editor.value.slice(Math.max(0, start - 700), start), after: editor.value.slice(end, end + 700) });
+      showSelectionBubble({ type: "editor", editor, start, end, selected: editor.value.slice(start, end), before: editor.value.slice(Math.max(0, start - 700), start), after: editor.value.slice(end, end + 700), sessionId: `editor-${start}-${end}-${Date.now()}` }, event);
     };
     editor.addEventListener("mouseup", capture);
-    editor.addEventListener("keyup", (event) => { if (event.shiftKey || ["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown"].includes(event.key)) capture(); });
+    editor.addEventListener("keyup", (event) => { if (event.shiftKey || ["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown"].includes(event.key)) capture(event); });
   });
   $("#annotatedCopy")?.addEventListener("mouseup", () => {
     const selection = window.getSelection();
@@ -695,7 +763,7 @@ function bindSelectionEditing() {
     const manuscript = stripHeading(state.project.files.voiceover.content);
     const start = manuscript.indexOf(selected);
     if (start < 0) return;
-    showSelectionAssistant({ type: "manuscript", start, end: start + selected.length, selected, before: manuscript.slice(Math.max(0, start - 700), start), after: manuscript.slice(start + selected.length, start + selected.length + 700) });
+    showSelectionBubble({ type: "manuscript", start, end: start + selected.length, selected, before: manuscript.slice(Math.max(0, start - 700), start), after: manuscript.slice(start + selected.length, start + selected.length + 700), sessionId: `manuscript-${start}-${Date.now()}` }, event);
   });
   $("#selectionInstruction")?.addEventListener("keydown", (event) => {
     if (event.key === "Enter") { event.preventDefault(); runSelectionEdit(); }
@@ -718,30 +786,14 @@ async function runSelectionEdit() {
       if (status) status.textContent = event.label || "正在处理选区";
     });
     const replacement = String(data.result.replacement || "");
-    if (selection.type === "editor" && selection.editor?.isConnected) {
-      const editor = selection.editor;
-      const current = editor.value;
-      const start = current.slice(selection.start, selection.end) === selection.selected ? selection.start : current.indexOf(selection.selected);
-      if (start < 0) throw new Error("选中文字已经变化，请重新选择");
-      editor.value = `${current.slice(0, start)}${replacement}${current.slice(start + selection.selected.length)}`;
-      editor.setSelectionRange(start, start + replacement.length);
-      editor.dispatchEvent(new Event("input", { bubbles: true }));
-    } else {
-      const manuscript = stripHeading(state.project.files.voiceover.content);
-      const start = manuscript.indexOf(selection.selected);
-      if (start < 0) throw new Error("选中文字已经变化，请重新选择");
-      const updated = `${manuscript.slice(0, start)}${replacement}${manuscript.slice(start + selection.selected.length)}`;
-      await saveFile("voiceover", `# 最终口播稿\n\n${formatCorrectedDraft(updated)}\n`);
-      state.rewriteDirty = false;
-    }
-    state.workspace.conversation ||= [];
-    state.workspace.conversation.push({ role: "user", stage: state.activeStage, text: `[选区修改] ${instruction}`, at: new Date().toISOString() });
-    state.workspace.conversation.push({ role: "assistant", stage: state.activeStage, text: data.result.reply, at: new Date().toISOString() });
+    const session = selectionConversation(selection);
+    session.messages.push({ role: "user", text: instruction, at: new Date().toISOString() }, { role: "assistant", text: data.result.reply || "已生成一版修改", at: new Date().toISOString(), replacement });
+    state.selectionProposal = { selection, replacement, reply: data.result.reply || "已生成一版修改" };
+    $("#selectionProposal").textContent = replacement;
+    $("#selectionProposalWrap").hidden = false;
+    renderSelectionConversation();
     await saveWorkspace();
-    state.selectionEdit = null;
-    if (selection.type === "manuscript") renderStage();
-    else $("#selectionAssistant").hidden = true;
-    showToast("已原位替换选中的文字");
+    showToast("AI 已生成预览，请选择采用、继续修改或重新生成");
   } catch (error) { showToast(error.message); }
   finally {
     state.selectionRunning = false;
@@ -751,6 +803,54 @@ async function runSelectionEdit() {
       currentButton.textContent = "AI 修改选中内容";
     }
   }
+}
+
+async function applySelectionProposal() {
+  const proposal = state.selectionProposal;
+  if (!proposal) return showToast("请先让 AI 生成一版预览");
+  const { selection, replacement } = proposal;
+  let undo = null;
+  if (selection.type === "editor" && selection.editor?.isConnected) {
+    const editor = selection.editor;
+    const current = editor.value;
+    const start = current.slice(selection.start, selection.end) === selection.selected ? selection.start : current.indexOf(selection.selected);
+    if (start < 0) throw new Error("选中文字已经变化，请重新选择");
+    editor.value = `${current.slice(0, start)}${replacement}${current.slice(start + selection.selected.length)}`;
+    undo = { type: "editor", editor, before: current };
+    editor.setSelectionRange(start, start + replacement.length);
+    editor.dispatchEvent(new Event("input", { bubbles: true }));
+  } else {
+    const manuscript = stripHeading(state.project.files.voiceover.content);
+    const start = manuscript.indexOf(selection.selected);
+    if (start < 0) throw new Error("选中文字已经变化，请重新选择");
+    undo = { type: "manuscript", before: manuscript };
+    await saveFile("voiceover", `# 最终口播稿\n\n${formatCorrectedDraft(`${manuscript.slice(0, start)}${replacement}${manuscript.slice(start + selection.selected.length)}`)}\n`);
+    state.rewriteDirty = false;
+  }
+  state.workspace.conversation ||= [];
+  state.workspace.conversation.push({ role: "assistant", stage: state.activeStage, text: `[选区采用] ${proposal.reply}`, at: new Date().toISOString() });
+  await saveWorkspace();
+  state.selectionUndo = undo;
+  state.selectionProposal = null;
+  state.selectionEdit = null;
+  $("#selectionAssistant").hidden = true;
+  if (!$("#selectionUndo")) els.stageContent.insertAdjacentHTML("beforeend", '<button class="selection-undo" id="selectionUndo" data-action="selection-undo">↶ 撤回刚才的采用</button>');
+  showToast("已采用这版修改；可点击“撤回刚才的采用”恢复");
+}
+
+async function undoSelectionProposal() {
+  const undo = state.selectionUndo;
+  if (!undo) return showToast("暂时没有可撤回的选区改写");
+  if (undo.type === "editor" && undo.editor?.isConnected) {
+    undo.editor.value = undo.before;
+    undo.editor.dispatchEvent(new Event("input", { bubbles: true }));
+  } else if (undo.type === "manuscript") {
+    await saveFile("voiceover", `# 最终口播稿\n\n${formatCorrectedDraft(undo.before)}\n`);
+    state.rewriteDirty = false;
+    renderStage();
+  }
+  state.selectionUndo = null;
+  showToast("已撤回刚才采用的选区改写");
 }
 
 async function goNextStage() {
@@ -816,7 +916,8 @@ function stageControlsMarkup(instructionOverride = null) {
 }
 
 function compareToolsMarkup() {
-  const enabled = state.workspace.ui?.syncScroll !== false;
+  const reviewing = state.activeStage === "review";
+  const enabled = reviewing ? state.workspace.ui?.reviewSyncScroll === true : state.workspace.ui?.syncScroll !== false;
   return `<div class="compare-tools"><span>双栏对照</span><button class="${enabled ? "active" : ""}" data-action="toggle-scroll-sync">${enabled ? "✓ 取消跟随" : "开启一键跟随"}</button><em>${enabled ? "跟随已开启：滚动任意一栏，另一栏会按相同比例跟随" : "两栏可独立滚动"}</em></div>`;
 }
 
@@ -866,11 +967,15 @@ function renderStage() {
   const nextStage = stageOrder[currentIndex + 1];
   els.stageContent.innerHTML = `
     ${renderers[state.activeStage]()}
+    <button class="selection-bubble" id="selectionBubble" data-action="selection-open" hidden>✦ AI 改写</button>
+    ${state.selectionUndo ? '<button class="selection-undo" data-action="selection-undo">↶ 撤回刚才的采用</button>' : ""}
     <aside class="selection-assistant" id="selectionAssistant" hidden>
       <div><span>已选中文字</span><button data-action="selection-cancel" aria-label="关闭选区编辑">×</button></div>
       <blockquote id="selectionPreview"></blockquote>
       <label>告诉 AI 这段怎么改<input id="selectionInstruction" placeholder="例如：更口语一点；保留爆点但说得严谨；缩短一半…"></label>
-      <footer><em id="selectionStatus">只会替换选中的文字</em><button data-action="selection-run">AI 修改选中内容</button></footer>
+      <div class="selection-proposal" id="selectionProposalWrap" hidden><span>AI 改写预览</span><p id="selectionProposal"></p><div><button data-action="selection-retry">重新生成</button><button data-action="selection-apply">采用放入正文</button></div></div>
+      <details class="selection-history"><summary>本篇选区 AI 记录</summary><div id="selectionConversation"></div></details>
+      <footer><em id="selectionStatus">只会替换这一处，先预览后采用</em><button data-action="selection-run">AI 生成预览</button></footer>
     </aside>
     <div class="stage-footer-actions"><div><b>第 ${currentIndex + 1} 步 · ${stageNames[state.activeStage]}</b><span>每一步都可以手动修改后再继续</span></div>${nextStage ? `<button class="stage-next-action" data-action="next-stage">下一步：${stageNames[nextStage]} →</button>` : '<button class="stage-next-action" data-action="copy-package">复制发布方案</button>'}</div>`;
   bindStageEvents();
@@ -931,6 +1036,9 @@ async function decide(kind, id, status) {
   const list = kind === "fact" ? state.workspace.factChecks : state.workspace.complianceIssues;
   const item = list.find((entry) => entry.id === id);
   if (!item) return;
+  const pageY = window.scrollY;
+  const manuscriptScroll = $("#annotatedCopy")?.scrollTop ?? $("#reviewEditor")?.scrollTop ?? 0;
+  const reviewScroll = $(".combined-review", els.stageContent)?.scrollTop || 0;
   let replaced = false;
   const original = kind === "fact" ? item.claim : item.original;
   const current = $("#reviewEditor")?.value || stripHeading(state.project.files.voiceover.content);
@@ -953,6 +1061,13 @@ async function decide(kind, id, status) {
   item.status = status;
   await saveWorkspace();
   renderStage();
+  requestAnimationFrame(() => {
+    window.scrollTo(0, pageY);
+    const manuscriptPane = $("#annotatedCopy") || $("#reviewEditor");
+    const reviewPane = $(".combined-review", els.stageContent);
+    if (manuscriptPane) manuscriptPane.scrollTop = manuscriptScroll;
+    if (reviewPane) reviewPane.scrollTop = reviewScroll;
+  });
   showToast(status === "accepted" ? (replaced ? "已接受，并替换到完整稿件" : "建议已接受，请按上下文手动调整") : status === "pending" ? "已恢复为待决定，可继续修改" : (replaced ? "已撤销替换并恢复原文" : "已记录保留原文"));
 }
 
@@ -1012,13 +1127,22 @@ async function handleStageAction(action) {
       showToast(`完整定稿已保存 · ${textLength(complete)} 字`);
     } else if (action === "more-options") await runAIStage({ stageOverride: "openings", bypassPrompt: true });
     else if (action === "toggle-scroll-sync") {
-      state.workspace.ui.syncScroll = state.workspace.ui.syncScroll === false;
-      await saveWorkspace(); renderStage(); showToast(state.workspace.ui.syncScroll ? "双栏已开启一键跟随" : "双栏已取消跟随");
+      const key = state.activeStage === "review" ? "reviewSyncScroll" : "syncScroll";
+      state.workspace.ui[key] = state.workspace.ui[key] !== true;
+      await saveWorkspace(); renderStage(); showToast(state.workspace.ui[key] ? "双栏已开启一键跟随" : "双栏已取消跟随");
+    }
+    else if (action === "toggle-review-archive") {
+      state.workspace.reviewArchiveOpen = !state.workspace.reviewArchiveOpen;
+      await saveWorkspace(); renderStage();
     }
     else if (action === "rewrite-notes" || action === "stage-instructions") openStagePrompt(state.activeStage);
     else if (action === "open-chat") openChat();
-    else if (action === "selection-cancel") { state.selectionEdit = null; const panel = $("#selectionAssistant"); if (panel) panel.hidden = true; }
+    else if (action === "selection-open") openSelectionAssistant();
+    else if (action === "selection-cancel") { state.selectionEdit = null; state.selectionProposal = null; const panel = $("#selectionAssistant"), bubble = $("#selectionBubble"); if (panel) panel.hidden = true; if (bubble) bubble.hidden = true; }
     else if (action === "selection-run") await runSelectionEdit();
+    else if (action === "selection-retry") await runSelectionEdit();
+    else if (action === "selection-apply") await applySelectionProposal();
+    else if (action === "selection-undo") await undoSelectionProposal();
     else if (action === "run-stage-ai") {
       await runAIStage({ bypassPrompt: true });
     }
@@ -1148,22 +1272,22 @@ async function searchFactSources(button) {
   };
   button.disabled = true;
   button.textContent = "搜索中…";
-  setStatus("running", "已开始检索当前关键词· 0 秒");
+  setStatus("running", "正在并行检索多个问法、筛选来源并读取正文证据 · 0 秒");
   clearInterval(sourceSearchTimer);
   sourceSearchTimer = setInterval(() => {
     const elapsed = Math.floor((Date.now() - startedAt) / 1000);
-    setStatus("running", `正在查找并筛选相关来源 · ${elapsed} 秒`);
+    setStatus("running", `正在检索、去重并核对正文证据 · ${elapsed} 秒`);
   }, 1000);
   try {
     const data = await request("/api/source-search", {
       method: "POST",
-      body: JSON.stringify({ query, queries: [] })
+      body: JSON.stringify({ query, claim: item.claim, queries: Array.isArray(item.searchQueries) ? item.searchQueries : [], provider: selectedProvider(), model: selectedModel() })
     });
     item.sources = data.sources || [];
     const elapsed = Math.floor((Date.now() - startedAt) / 1000);
     state.sourceSearches[item.id] = item.sources.length
-      ? { status: "success", message: `搜索完成：找到 ${item.sources.length} 个候选来源 · ${elapsed} 秒` }
-      : { status: "empty", message: `搜索完成：没有通过相关性筛选的来源 · ${elapsed} 秒，可换词重试` };
+      ? { status: "success", message: `搜索完成：保留 ${item.sources.length} 个有正文证据的来源 · ${elapsed} 秒。${data.answer || ""}` }
+      : { status: "empty", message: `搜索完成：没有来源通过正文证据与语义复核 · ${elapsed} 秒。${data.answer || "可换词重试"}` };
     await saveWorkspace();
     renderStage();
     showToast(item.sources.length ? `找到 ${item.sources.length} 个权威来源，请打开核对` : "没有找到足够可靠的来源，这条断言应谨慎保留");
@@ -1180,8 +1304,8 @@ async function searchFactSources(button) {
 async function searchAllFactSources(button) {
   const pending = (state.workspace.factChecks || [])
     .map((item, index) => ({ item, index }))
-    .filter(({ item }) => !item.sources?.length);
-  if (!pending.length) return showToast("当前核验项都已有来源");
+    .filter(({ item }) => item.status === "pending");
+  if (!pending.length) return showToast("当前没有待处理的事实核验项");
   button.disabled = true;
   let foundCount = 0;
   const originalText = button.textContent;
@@ -1193,11 +1317,14 @@ async function searchAllFactSources(button) {
       try {
         const data = await request("/api/source-search", {
           method: "POST",
-          body: JSON.stringify({ query, queries: Array.isArray(item.searchQueries) ? item.searchQueries : [] })
+          body: JSON.stringify({ query, claim: item.claim, queries: Array.isArray(item.searchQueries) ? item.searchQueries : [], provider: selectedProvider(), model: selectedModel() })
         });
         const sources = data.sources || [];
+        state.workspace.factChecks[index].sources = sources;
+        delete state.workspace.factChecks[index].verdict;
+        delete state.workspace.factChecks[index].verdictReasoning;
+        delete state.workspace.factChecks[index].correctStatement;
         if (sources.length) {
-          state.workspace.factChecks[index].sources = sources;
           foundCount += 1;
         }
       } catch { /* 单条失败不影响整体 */ }
@@ -1572,14 +1699,13 @@ function alignReviewPair(key, origin) {
   if (!card || !mark) return;
   if (origin === "mark") {
     const scroller = card.closest(".combined-review");
-    if (scroller) scroller.scrollTo({ top: scroller.scrollTop + card.getBoundingClientRect().top - mark.getBoundingClientRect().top, behavior: "smooth" });
+    if (scroller) {
+      const cardTop = card.getBoundingClientRect().top;
+      const paneTop = scroller.getBoundingClientRect().top;
+      scroller.scrollTo({ top: Math.max(0, scroller.scrollTop + cardTop - paneTop - 18), behavior: "smooth" });
+    }
     card.classList.add("focused");
     setTimeout(() => card.classList.remove("focused"), 1800);
-  } else {
-    const scroller = mark.closest(".annotated-copy");
-    if (scroller) scroller.scrollTo({ top: scroller.scrollTop + mark.getBoundingClientRect().top - card.getBoundingClientRect().top, behavior: "smooth" });
-    mark.classList.add("focused");
-    setTimeout(() => mark.classList.remove("focused"), 1800);
   }
 }
 
