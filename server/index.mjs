@@ -4,7 +4,8 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { createProjectStore } from "./project-store.mjs";
 import { createAIService } from "./ai-service.mjs";
-import { fetchSourcePreview, searchWebSources } from "./source-preview.mjs";
+import { fetchSourcePreview } from "./source-preview.mjs";
+import { createResearchService } from "./research-service.mjs";
 
 const serverDir = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(serverDir, "..");
@@ -26,6 +27,7 @@ await loadLocalEnv(path.join(root, ".env.local"));
 
 const store = createProjectStore(root);
 const ai = createAIService(root);
+const research = createResearchService(ai);
 const port = Number(process.env.PORT || 4173);
 const memoryPath = path.join(root, "accounts/default/memory/editorial_memory.json");
 
@@ -112,34 +114,40 @@ async function api(request, response, url) {
   }
   if (request.method === "POST" && url.pathname === "/api/source-search") {
     const payload = await bodyJson(request);
-    const searchApiKey = request.headers["x-search-api-key"] || payload.searchApiKey;
-    let sources = await searchWebSources(payload.query, {
-        serperApiKey: searchApiKey,
-        searchProvider: payload.searchProvider,
-        queries: Array.isArray(payload.queries) ? payload.queries : []
+    return sendJson(response, 200, await research.run({
+      claim: payload.claim || payload.query,
+      query: payload.query,
+      queries: Array.isArray(payload.queries) ? payload.queries : [],
+      searchApiKey: request.headers["x-search-api-key"] || payload.searchApiKey,
+      aiKey: request.headers["x-ai-api-key"] || request.headers["x-openai-api-key"],
+      provider: payload.provider,
+      model: payload.model
+    }));
+  }
+  if (request.method === "POST" && url.pathname === "/api/source-search-stream") {
+    const payload = await bodyJson(request);
+    response.writeHead(200, {
+      "Content-Type": "application/x-ndjson; charset=utf-8",
+      "Cache-Control": "no-cache, no-transform",
+      "Connection": "keep-alive"
+    });
+    const write = (event) => response.write(`${JSON.stringify(event)}\n`);
+    try {
+      const result = await research.run({
+        claim: payload.claim || payload.query,
+        query: payload.query,
+        queries: Array.isArray(payload.queries) ? payload.queries : [],
+        searchApiKey: request.headers["x-search-api-key"] || payload.searchApiKey,
+        aiKey: request.headers["x-ai-api-key"] || request.headers["x-openai-api-key"],
+        provider: payload.provider,
+        model: payload.model,
+        onProgress: async (event) => write({ type: "progress", ...event })
       });
-    let answer = "已按网页正文相关性筛选来源。";
-    const aiKey = request.headers["x-ai-api-key"] || request.headers["x-openai-api-key"];
-    if (sources.length && (aiKey || ai.status().configured)) {
-      try {
-        const reviewed = await ai.run({
-          apiKey: aiKey,
-          provider: payload.provider,
-          model: payload.model,
-          stage: "sourceReview",
-          payload: { claim: payload.claim || payload.query, query: payload.query, sources }
-        });
-        const selected = new Map((reviewed.result.selected || []).map((item) => [Number(item.index), item]));
-        sources = sources.flatMap((source, index) => {
-          const verdict = selected.get(index);
-          return verdict ? [{ ...source, aiRelation: verdict.relation, aiReason: verdict.reason }] : [];
-        });
-        answer = reviewed.result.answer || answer;
-      } catch (error) {
-        answer = `网页证据筛选已完成；AI 语义复核暂时失败：${error.message}`;
-      }
+      write({ type: "result", result });
+    } catch (error) {
+      write({ type: "error", error: error.message || "研究式搜索失败" });
     }
-    return sendJson(response, 200, { sources, answer });
+    return response.end();
   }
   if (request.method === "POST" && url.pathname === "/api/ai/run") {
     const payload = await bodyJson(request);

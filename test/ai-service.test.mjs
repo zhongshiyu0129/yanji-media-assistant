@@ -70,7 +70,7 @@ test("AI metadata stage returns a sidebar title and domain tags", async (context
   assert.deepEqual(response.result.tags, ["黄河", "流域文化"]);
 });
 
-test("fact checking enables the Responses web search tool", async (context) => {
+test("fact detection does not search until the user requests verification", async (context) => {
   const originalFetch = global.fetch;
   let requestBody;
   context.after(() => { global.fetch = originalFetch; });
@@ -78,15 +78,20 @@ test("fact checking enables the Responses web search tool", async (context) => {
     requestBody = JSON.parse(options.body);
     return new Response(JSON.stringify({
       model: "gpt-5.4-mini",
-      output: [{ type: "message", content: [{ type: "output_text", text: '{"factChecks":[]}' }] }]
+      output: [{ type: "message", content: [{ type: "output_text", text: JSON.stringify({ factChecks: [{
+        claim: "这是一句待核验事实", sourceQuery: "一句 待核验 事实", searchQueries: ["直接查询", "权威来源", "反向证据"],
+        confidence: 70, level: "recommended", summary: "涉及客观事实", suggestion: "改成审慎说法",
+        sources: [{ title: "模型自行附带的来源", url: "https://example.com", excerpt: "不应保留" }]
+      }] }) }] }]
     }), { status: 200, headers: { "Content-Type": "application/json" } });
   };
 
   const service = createAIService("/tmp/yanji-missing-context");
-  await service.run({ apiKey: "test-key", provider: "openai", stage: "facts", payload: { draft: "需要查证的一段历史口播稿。" } });
+  const response = await service.run({ apiKey: "test-key", provider: "openai", stage: "facts", payload: { draft: "需要查证的一段历史口播稿。" } });
 
-  assert.deepEqual(requestBody.tools, [{ type: "web_search" }]);
-  assert.deepEqual(requestBody.include, ["web_search_call.action.sources"]);
+  assert.equal(requestBody.tools, undefined);
+  assert.equal(requestBody.include, undefined);
+  assert.deepEqual(response.result.factChecks[0].sources, []);
 });
 
 test("rewrite is automatically recalibrated to the requested length and large paragraphs", async (context) => {
@@ -180,4 +185,29 @@ test("source review removes topic-only search results", async (context) => {
     }
   });
   assert.deepEqual(response.result.selected.map((item) => item.index), [1]);
+});
+
+test("search planning splits a compound claim into independently searchable facts", async (context) => {
+  const originalFetch = global.fetch;
+  context.after(() => { global.fetch = originalFetch; });
+  global.fetch = async () => new Response(JSON.stringify({
+    model: "deepseek-flash",
+    choices: [{ message: { content: JSON.stringify({
+      summary: "分开核验姓氏来源和改姓情况",
+      claims: [
+        { id: "C1", text: "钮祜禄在满语中有狼的含义", queries: ["钮祜禄 满语 狼 词义", "钮祜禄 满语 词源 官方", "钮祜禄 不是狼"] },
+        { id: "C2", text: "钮祜禄氏后来多改姓郎", queries: ["钮祜禄氏 改姓 郎", "满族 姓氏 钮祜禄 郎 文献", "钮祜禄氏 改姓 争议"] }
+      ]
+    }) } }]
+  }), { status: 200, headers: { "Content-Type": "application/json" } });
+
+  const service = createAIService("/tmp/yanji-missing-context");
+  const response = await service.run({
+    apiKey: "test-key", provider: "deepseek", stage: "searchPlan",
+    payload: { claim: "钮祜禄是狼的意思，后来大多改姓郎" }
+  });
+
+  assert.equal(response.result.claims.length, 2);
+  assert.match(response.result.claims[0].text, /含义/);
+  assert.ok(response.result.claims.every((item) => item.queries.length >= 3));
 });

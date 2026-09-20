@@ -24,7 +24,6 @@ const state = {
 let metadataTimer;
 let optionSaveTimer;
 let aiProgressTimer;
-let sourceSearchTimer;
 
 const AI_KEY_STORAGE = "yanji-openai-api-key";
 const AI_MODEL_STORAGE = "yanji-openai-model";
@@ -56,16 +55,17 @@ const els = {
 
 const stageLabels = {
   source: "整理原稿", rewrite: "生成改写稿", openings: "组合成稿",
-  review: "检查整合稿", publish: "生成发布素材"
+  review: "识别待核验句", compliance: "检测风险表达", publish: "生成发布素材"
 };
 
-const stageNames = { source: "原稿整理", rewrite: "AI 改写", openings: "开头结尾", review: "全文审校", publish: "发布素材" };
-const stageOrder = ["source", "rewrite", "openings", "review", "publish"];
+const stageNames = { source: "原稿整理", rewrite: "AI 改写", openings: "开头结尾", review: "事实核验", compliance: "风险表达", publish: "发布素材" };
+const stageOrder = ["source", "rewrite", "openings", "review", "compliance", "publish"];
 const fixedRequirements = {
   source: ["保留原意", "修正错字", "纠正断句", "整理成大段落"],
   rewrite: ["大白话", "知识密度高", "节奏紧", "保留爆点", "大段落", "严格控字数"],
   openings: ["多个方向", "正文接得住", "开头抓人", "结尾有余味"],
-  review: ["结合全文", "事实有来源", "风险不机械替换", "接受后定位修改"],
+  review: ["只识别待核验句", "暂不联网搜索", "原句标黄", "点击后才校验"],
+  compliance: ["结合全文", "依据规则库", "风险不机械替换", "接受后定位修改"],
   publish: ["标题不虚构", "描述不重复", "互动具体", "标注易读错字词"]
 };
 
@@ -73,7 +73,7 @@ const processFiles = [
   ["timeline", "会话记录"],
   ["extraction", "原稿拆解"], ["corrected", "转写纠错"], ["hooks", "开头方案"],
   ["rewrite", "重构初稿"], ["deepened", "内容深化"], ["styled", "风格校准"],
-  ["review", "事实与合规"], ["log", "操作记录"]
+  ["review", "事实与风险"], ["log", "操作记录"]
 ];
 
 async function request(url, options = {}) {
@@ -110,6 +110,33 @@ async function requestAIStream(payload, onProgress = () => {}) {
     if (done) break;
   }
   if (!result) throw new Error("AI 没有返回最终结果");
+  return result;
+}
+
+async function requestResearchStream(payload, onProgress = () => {}) {
+  const headers = { "Content-Type": "application/json" };
+  if (sessionKey()) headers["X-AI-Api-Key"] = sessionKey();
+  if (searchKey()) headers["X-Search-Api-Key"] = searchKey();
+  const response = await fetch("/api/source-search-stream", { method: "POST", headers, body: JSON.stringify(payload) });
+  if (!response.ok || !response.body) throw new Error(`研究式搜索请求失败（${response.status}）`);
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  let result = null;
+  while (true) {
+    const { value, done } = await reader.read();
+    buffer += decoder.decode(value || new Uint8Array(), { stream: !done });
+    const lines = buffer.split("\n"); buffer = lines.pop() || "";
+    for (const line of lines) {
+      if (!line.trim()) continue;
+      const event = JSON.parse(line);
+      if (event.type === "progress") onProgress(event);
+      else if (event.type === "result") result = event.result;
+      else if (event.type === "error") throw new Error(event.error || "研究式搜索失败");
+    }
+    if (done) break;
+  }
+  if (!result) throw new Error("研究式搜索没有返回结果");
   return result;
 }
 
@@ -449,16 +476,6 @@ function factsStage() {
       </article>`).join("") : '<div class="empty-list">运行事实核验后，结果会逐条显示在这里。</div>'}</div>`;
 }
 
-function complianceStage() {
-  const items = state.workspace.complianceIssues;
-  const resolved = items.filter((item) => item.status !== "pending").length;
-  return `
-    <div class="stage-heading"><div><span>STEP 05</span><h2>违禁词与风险表达</h2><p>规则来自你提供的《短视频违禁词》，系统结合上下文给建议，不做机械替换。</p></div><div class="review-progress"><b>${resolved}/${items.length}</b><span>已处理</span></div></div>
-    <div class="source-note"><span>规则库状态</span><b>用户提供 · 待持续核验平台原文</b><p>文档中部分“绝对禁用”和处罚数字暂不作为确定事实，只用于提高检查敏感度。</p></div>
-    <div class="compliance-list">${items.length ? items.map((item) => `
-      <article class="compliance-item ${item.status !== "pending" ? "resolved" : ""}"><div class="risk-marker ${item.severity}">!</div><div class="risk-content"><div><span>${escapeHtml(item.category)}</span><em>${item.severity === "high" ? "高风险" : "中风险"}</em></div><p class="replacement"><del>${escapeHtml(item.original)}</del><i>→</i><ins>${escapeHtml(item.suggestion)}</ins></p><small>${escapeHtml(item.reason)}</small></div><div class="decision-actions"><button data-review="compliance" data-id="${item.id}" data-status="kept">不改</button><button class="accept" data-review="compliance" data-id="${item.id}" data-status="accepted">接受</button></div></article>`).join("") : '<div class="empty-list">完成成稿后，系统会逐句标出需要处理的风险表达。</div>'}</div>`;
-}
-
 function phraseGrams(value) {
   const normalized = String(value || "").replace(/[\s，。！？；：、,.!?;:“”"'（）()《》·—-]/gu, "");
   const grams = new Set();
@@ -524,26 +541,44 @@ function verdictBadge(item) {
 function sourceSearchStatus(item) {
   const status = state.sourceSearches[item.id];
   if (!status) return "";
-  return `<div class="source-search-status ${escapeHtml(status.status || "")}" data-source-search-status="${escapeHtml(item.id)}">${escapeHtml(status.message || "")}</div>`;
+  const percent = Math.max(0, Math.min(100, Number(status.percent) || 0));
+  return `<div class="source-search-status ${escapeHtml(status.status || "")}" data-source-search-status="${escapeHtml(item.id)}"><div><span>${escapeHtml(status.message || "")}</span><b>${percent}%</b></div><i><u style="width:${percent}%"></u></i></div>`;
+}
+
+function researchTraceMarkup(item) {
+  if (!item.verificationRequested) return "";
+  const trace = Array.isArray(item.searchTrace) ? item.searchTrace : [];
+  if (!trace.length) return "";
+  return `<details class="research-trace"><summary><span>研究式检索轨迹</span><em>${trace.length} 个独立事实 · 点击展开</em></summary><div>${trace.map((step) => `
+    <article><header><b>${escapeHtml(step.id)}</b><span>${step.acceptedCount ? `${step.acceptedCount} 条证据入选` : "证据不足"}</span></header><p>${escapeHtml(step.claim)}</p><div>${(step.queries || []).map((query) => `<code>${escapeHtml(query)}</code>`).join("")}</div><small>${escapeHtml(step.answer || step.error || "")}</small></article>`).join("")}</div></details>`;
+}
+
+function sourceLinksMarkup(item) {
+  if (!item.verificationRequested) return '<span class="source-empty-hint">尚未联网搜索。只有点击“需要校验”后才会查找来源。</span>';
+  if (!item.sources?.length) return '<span class="source-empty-hint">没有来源通过正文证据筛选，可调整检索词后重试。</span>';
+  const links = item.sources.map((source, sourceIndex) => {
+    const relation = source.aiRelation === "refutes" ? "反驳证据" : source.aiRelation === "supports" ? "支持证据" : "正文证据";
+    return `<div class="source-evidence-link"><button data-source-preview data-kind="fact" data-id="${escapeHtml(item.id)}" data-source-index="${sourceIndex}" data-url="${escapeHtml(source.url)}" data-title="${escapeHtml(source.title)}" data-query="${escapeHtml(source.atomicClaim || item.claim)}" data-excerpt="${escapeHtml(source.excerpt || "")}">▣ ${relation}：${escapeHtml(source.title)}</button>${source.aiReason ? `<small>${escapeHtml(source.aiReason)}</small>` : ""}</div>`;
+  }).join("");
+  return links;
 }
 
 function reviewStage() {
   const manuscript = isMeaningful(state.project.files.voiceover.content) ? stripHeading(state.project.files.voiceover.content) : "";
   const facts = state.workspace.factChecks || [];
-  const risks = state.workspace.complianceIssues || [];
   const activeFacts = facts.filter((item) => item.status === "pending");
-  const activeRisks = risks.filter((item) => item.status === "pending");
-  const archived = [...facts.filter((item) => item.status !== "pending").map((item) => ({ ...item, kind: "fact" })), ...risks.filter((item) => item.status !== "pending").map((item) => ({ ...item, kind: "compliance" }))];
-  const resolved = [...facts, ...risks].filter((item) => item.status !== "pending").length;
-  const factContent = activeFacts.length ? activeFacts.map((item, index) => `
+  const queuedFacts = activeFacts.filter((item) => !item.verificationRequested);
+  const verifyingFacts = activeFacts.filter((item) => item.verificationRequested);
+  const archived = facts.filter((item) => item.status !== "pending").map((item) => ({ ...item, kind: "fact" }));
+  const resolved = facts.filter((item) => item.status !== "pending").length;
+  const factContent = verifyingFacts.length ? verifyingFacts.map((item, index) => `
     <article class="review-card ${item.status !== "pending" ? "resolved" : ""}" data-review-card="fact:${escapeHtml(item.id)}">
-      <div class="review-top"><div><span class="review-index">F${index + 1}</span><span class="level-badge ${item.level}">${item.level === "must" ? "必须修改" : item.level === "recommended" ? "建议修改" : "可以保留"}</span></div><div class="confidence ${confidenceClass(item.confidence)}"><span>置信度</span><b>${item.confidence}%</b><i><u style="width:${item.confidence}%"></u></i></div></div>
-      <blockquote>${escapeHtml(item.claim)}</blockquote><p class="fact-summary">${escapeHtml(item.summary)}</p>${verdictBadge(item)}
-      <div class="suggestion"><div><span>建议改成</span><small>可手动调整，也可选中其中一段再让 AI 改写</small></div><textarea data-suggestion-edit="fact" data-id="${escapeHtml(item.id)}" aria-label="编辑事实核验建议">${escapeHtml(item.suggestion)}</textarea></div>
-      <footer><div class="source-query-row"><label>检索词</label><input type="text" class="source-query-input" data-source-query data-id="${escapeHtml(item.id)}" value="${escapeHtml(item.sourceQuery || "")}" placeholder="输入关键词后搜索公开来源" spellcheck="false"><button class="source-query-search" data-source-search data-id="${escapeHtml(item.id)}" title="搜索可供核对的公开来源">⌕ 搜索</button></div><p class="review-help">“搜索”会按检索词找公开来源；“AI 验证证据”会读取已找到的来源，判断它是否支持这条说法。</p>${sourceSearchStatus(item)}<div class="source-footer-row"><div class="source-links">${item.sources?.length ? item.sources.map((source, sourceIndex) => `<button data-source-preview data-kind="fact" data-id="${escapeHtml(item.id)}" data-source-index="${sourceIndex}" data-url="${escapeHtml(source.url)}" data-title="${escapeHtml(source.title)}" data-query="${escapeHtml(item.claim)}" data-excerpt="${escapeHtml(source.excerpt || "")}">▣ ${source.evidence ? "已缓存证据" : "预览并定位"}：${escapeHtml(source.title)}</button>`).join("") + `<button class="ai-verify-button" data-ai-verify data-id="${escapeHtml(item.id)}" title="根据已找到的来源判断这条说法">⚖ ${item.verdict ? "重新验证证据" : "AI 验证证据"}</button>` : `<span class="source-empty-hint">暂无可靠来源，可改检索词后再搜索。</span>`}</div><div class="decision-actions"><button data-review="fact" data-id="${item.id}" data-status="kept">仍然保留</button><button class="accept" data-review="fact" data-id="${item.id}" data-status="accepted">接受并替换</button></div></div></footer>
-    </article>`).join("") : '<div class="empty-list">点击右上角“检查整合稿”后，事实判断会显示在这里。</div>';
-  const riskContent = activeRisks.length ? activeRisks.map((item, index) => `
-    <article class="compliance-item ${item.status !== "pending" ? "resolved" : ""}" data-review-card="compliance:${escapeHtml(item.id)}"><div class="risk-marker ${item.severity}">R${index + 1}</div><div class="risk-content"><div><span>${escapeHtml(item.category)}</span><em>${item.severity === "high" ? "高风险" : "中风险"}</em></div><p class="replacement"><del>${escapeHtml(item.original)}</del><i>→</i><span>建议表达 · 可选中再交给 AI 修改</span></p><div class="risk-suggestion"><textarea data-suggestion-edit="compliance" data-id="${escapeHtml(item.id)}" aria-label="编辑风险表达建议">${escapeHtml(item.suggestion)}</textarea></div><small>${escapeHtml(item.reason)}</small></div><div class="decision-actions"><button data-review="compliance" data-id="${item.id}" data-status="kept">仍然保留</button><button class="accept" data-review="compliance" data-id="${item.id}" data-status="accepted">接受并替换</button></div></article>`).join("") : '<div class="empty-list">完成整合稿后，风险表达会结合全文显示在这里。</div>';
+      <div class="review-top"><div><span class="review-index">F${index + 1}</span><span class="level-badge ${item.level}">${item.level === "must" ? "必须核验" : item.level === "recommended" ? "建议核验" : "按需核验"}</span></div><div class="confidence ${confidenceClass(item.confidence)}"><span>识别度</span><b>${item.confidence}%</b><i><u style="width:${item.confidence}%"></u></i></div></div>
+      <blockquote>${escapeHtml(item.claim)}</blockquote><p class="fact-summary">${escapeHtml(item.summary)}</p>${item.verificationRequested ? verdictBadge(item) : ""}
+      ${item.verificationComplete ? `<div class="suggestion"><div><span>建议改成</span><small>${item.suggestion ? "依据本次证据判断生成；可继续手动调整" : "证据支持原说法，暂无需替换；如需改写可手动填写"}</small></div><textarea data-suggestion-edit="fact" data-id="${escapeHtml(item.id)}" aria-label="编辑事实核验建议" placeholder="证据支持原说法，暂无需替换">${escapeHtml(item.suggestion || "")}</textarea></div>` : '<div class="verification-pending-hint">正在搜索和阅读来源；校验完成后才会给出修改建议。</div>'}
+      <footer><div class="source-query-row"><label>检索词</label><input type="text" class="source-query-input" data-source-query data-id="${escapeHtml(item.id)}" value="${escapeHtml(item.sourceQuery || "")}" placeholder="可在开始校验前调整关键词" spellcheck="false"><button class="source-query-search" data-source-search data-id="${escapeHtml(item.id)}" title="只校验这一条事实">${item.verificationRequested ? "↻ 重新搜索校验" : "✓ 需要校验 · 开始搜索"}</button></div><p class="review-help">识别阶段不会联网。点击上面的按钮后，才会搜索正反证据、读取网页正文并给出判断。</p>${sourceSearchStatus(item)}${researchTraceMarkup(item)}<div class="source-footer-row"><div class="source-links">${sourceLinksMarkup(item)}</div><div class="decision-actions"><button data-review="fact" data-id="${item.id}" data-status="kept">仍然保留</button><button class="accept" data-review="fact" data-id="${item.id}" data-status="accepted">接受并替换</button></div></div></footer>
+    </article>`).join("") : '<div class="empty-list compact">从左侧黄色候选句中选择“开始校验”后，完整证据卡片会显示在这里。</div>';
+  const queueMarkup = queuedFacts.length ? `<section class="verification-queue"><header><div><b>待你决定是否校验</b><span>只列出候选句，尚未搜索，也不会给出修改建议</span></div><em>${queuedFacts.length} 条</em></header><div>${queuedFacts.map((item, index) => `<article><span>F${index + 1}</span><p>${escapeHtml(item.claim)}</p><button data-source-search data-id="${escapeHtml(item.id)}" title="搜索并校验这一条事实">开始校验</button></article>`).join("")}</div></section>` : "";
   const archiveMarkup = archived.length ? `<section class="review-archive"><button data-action="toggle-review-archive">${state.workspace.reviewArchiveOpen ? "收起" : "查看"}已处理记录（${archived.length}）</button>${state.workspace.reviewArchiveOpen ? `<div>${archived.map((item) => `<article><span>${item.kind === "fact" ? "事实" : "风险"} · ${item.status === "accepted" ? "已接受" : "已保留"}</span><p>${escapeHtml(item.claim || item.original)}</p><button data-review="${item.kind}" data-id="${item.id}" data-status="pending">重新考虑</button></article>`).join("")}</div>` : ""}</section>` : "";
   const journey = [
     ["原始稿", sourceBody(state.project.files.original.content)],
@@ -552,19 +587,43 @@ function reviewStage() {
   ].filter(([, text]) => String(text || "").trim());
   const journeyMarkup = `<section class="revision-journey"><header><div><b>本篇修改全程</b><span>从原文到当前全文，随项目一起保存</span></div></header>${journey.map(([label, text], index) => `<details ${index === journey.length - 1 ? "open" : ""}><summary><span>${index + 1}</span>${label}<em>${textLength(text)} 字</em></summary><p>${escapeHtml(text)}</p></details>`).join("") || '<div class="empty-list">保存原文后，会在这里留下版本历程。</div>'}</section>`;
   return `
-    <div class="stage-heading"><div><span>STEP 04</span><h2>在整合好的稿件上做全文审校</h2><p>左边始终保留完整上下文；右边同时看事实来源和风险表达，接受建议会直接替换到成稿。</p></div><div class="review-heading-actions">${activeFacts.length ? `<button class="small-button source-batch-button" data-action="search-all-sources">⌕ 重新检索全部事实来源</button>` : ""}<div class="review-progress"><b>${resolved}/${facts.length + risks.length}</b><span>已处理</span></div></div></div>
+    <div class="stage-heading"><div><span>STEP 04</span><h2>先标出可能需要验证的话</h2><p>AI 这里只识别、不联网：左栏把候选原句标成黄色，右栏先列出原因；你点击某一条“需要校验”后才开始搜索。</p></div><div class="review-heading-actions"><div class="review-progress"><b>${resolved}/${facts.length}</b><span>已处理</span></div></div></div>
     ${stageControlsMarkup()}
-    <div class="review-legend"><span><i class="must"></i>必须修改</span><span><i class="recommended"></i>建议修改</span><span><i class="optional"></i>可保留表达</span><em>置信度是证据支持程度，不是绝对真伪。</em></div>
+    <div class="review-legend"><span><i class="must"></i>发布前必须核验</span><span><i class="recommended"></i>建议核验</span><span><i class="optional"></i>可按需核验</span><em>当前识别度表示“是否值得查证”，尚不代表事实真伪。</em></div>
     ${compareToolsMarkup()}
     <div class="review-workbench" style="--pane-left:${Number(state.workspace.ui?.paneRatio) || 50}%">
-      <article class="editor-box review-manuscript"><header><div><b>整合后的完整稿件</b><span>悬停标记即可对应右侧建议</span></div><div class="review-view-switch"><button class="${state.reviewMode === "annotated" ? "active" : ""}" data-action="review-annotated">标注阅读</button><button class="${state.reviewMode === "edit" ? "active" : ""}" data-action="review-edit">手动修改</button><em id="reviewCount">${textLength(manuscript)} 字</em></div></header>${state.reviewMode === "edit" ? `<textarea id="reviewEditor" spellcheck="false" placeholder="请先在“开头结尾”中组合成稿…">${escapeHtml(manuscript)}</textarea>` : `<div class="annotated-copy" id="annotatedCopy">${annotatedManuscript(manuscript, facts, risks)}</div>`}<footer><span>黄色为事实点，红色为风险表达</span>${state.reviewMode === "edit" ? '<button data-action="save-review">保存全文</button>' : '<button data-action="review-edit">进入修改</button>'}</footer></article>
+      <article class="editor-box review-manuscript"><header><div><b>整合后的完整稿件</b><span>黄色只表示可能需要查证，不代表有错</span></div><div class="review-view-switch"><button class="${state.reviewMode === "annotated" ? "active" : ""}" data-action="review-annotated">标注阅读</button><button class="${state.reviewMode === "edit" ? "active" : ""}" data-action="review-edit">手动修改</button><em id="reviewCount">${textLength(manuscript)} 字</em></div></header>${state.reviewMode === "edit" ? `<textarea id="reviewEditor" spellcheck="false" placeholder="请先在“开头结尾”中组合成稿…">${escapeHtml(manuscript)}</textarea>` : `<div class="annotated-copy" id="annotatedCopy">${annotatedManuscript(manuscript, facts, [])}</div>`}<footer><span>黄色 = AI 识别出的待核验候选句</span>${state.reviewMode === "edit" ? '<button data-action="save-review">保存全文</button>' : '<button data-action="review-edit">进入修改</button>'}</footer></article>
       <div class="workbench-resizer" data-resize-handle title="左右拖动调整宽度">↔</div><aside class="combined-review">
-        <section><div class="combined-review-title"><div><b>事实核验</b><span>来源、置信度与修改级别</span></div><em>${activeFacts.length} 条待处理</em></div><div class="review-list">${factContent}</div></section>
-        <section><div class="combined-review-title"><div><b>违禁词与风险表达</b><span>依据你提供的规则库，结合全文判断</span></div><em>${activeRisks.length} 条待处理</em></div><div class="source-note"><span>规则库</span><b>用户提供</b><p>平台规则会变化，建议仍以发布时官方规则为准。</p></div><div class="compliance-list">${riskContent}</div></section>
+        <section><div class="combined-review-title"><div><b>可能需要验证的话</b><span>默认不搜索；只有开始校验后才会生成完整建议卡片</span></div><em>${queuedFacts.length} 条待决定</em></div>${queueMarkup}<div class="review-list">${factContent}</div></section>
         ${archiveMarkup}
       </aside>
     </div>
     ${journeyMarkup}`;
+}
+
+function complianceStage() {
+  const manuscript = isMeaningful(state.project.files.voiceover.content) ? stripHeading(state.project.files.voiceover.content) : "";
+  const risks = state.workspace.complianceIssues || [];
+  const activeRisks = risks.filter((item) => item.status === "pending");
+  const archived = risks.filter((item) => item.status !== "pending");
+  const resolved = archived.length;
+  const riskContent = activeRisks.length ? activeRisks.map((item, index) => `
+    <article class="compliance-item" data-review-card="compliance:${escapeHtml(item.id)}">
+      <div class="risk-marker ${item.severity}">R${index + 1}</div>
+      <div class="risk-content"><div><span>${escapeHtml(item.category)}</span><em>${item.severity === "high" ? "高风险" : "中风险"}</em></div><p class="replacement"><del>${escapeHtml(item.original)}</del><i>→</i><span>建议表达 · 可选中再交给 AI 修改</span></p><div class="risk-suggestion"><textarea data-suggestion-edit="compliance" data-id="${escapeHtml(item.id)}" aria-label="编辑风险表达建议">${escapeHtml(item.suggestion)}</textarea></div><small>${escapeHtml(item.reason)}</small></div>
+      <div class="decision-actions"><button data-review="compliance" data-id="${item.id}" data-status="kept">仍然保留</button><button class="accept" data-review="compliance" data-id="${item.id}" data-status="accepted">接受并替换</button></div>
+    </article>`).join("") : '<div class="empty-list">点击上方“AI 检测风险表达”后，违禁词和高风险表达会显示在这里。</div>';
+  const archiveMarkup = archived.length ? `<section class="review-archive"><button data-action="toggle-review-archive">${state.workspace.reviewArchiveOpen ? "收起" : "查看"}已处理记录（${archived.length}）</button>${state.workspace.reviewArchiveOpen ? `<div>${archived.map((item) => `<article><span>风险表达 · ${item.status === "accepted" ? "已接受" : "已保留"}</span><p>${escapeHtml(item.original)}</p><button data-review="compliance" data-id="${item.id}" data-status="pending">重新考虑</button></article>`).join("")}</div>` : ""}</section>` : "";
+  return `
+    <div class="stage-heading"><div><span>STEP 05</span><h2>单独检查违禁词与风险表达</h2><p>事实查证和平台风险已经分开；本环节只结合规则库检查歧视、对立、承诺、危险行为及其他发布风险。</p></div><div class="review-progress"><b>${resolved}/${risks.length}</b><span>已处理</span></div></div>
+    ${stageControlsMarkup()}
+    <div class="source-note"><span>规则库状态</span><b>用户提供 · 待持续核验平台原文</b><p>平台规则会变化，检测结果用于辅助人工判断，不做机械替换。</p></div>
+    ${compareToolsMarkup()}
+    <div class="review-workbench" style="--pane-left:${Number(state.workspace.ui?.paneRatio) || 50}%">
+      <article class="editor-box review-manuscript"><header><div><b>整合后的完整稿件</b><span>红色标出风险表达，点击正文标记可定位右侧卡片</span></div><div class="review-view-switch"><button class="${state.reviewMode === "annotated" ? "active" : ""}" data-action="review-annotated">标注阅读</button><button class="${state.reviewMode === "edit" ? "active" : ""}" data-action="review-edit">手动修改</button><em id="reviewCount">${textLength(manuscript)} 字</em></div></header>${state.reviewMode === "edit" ? `<textarea id="reviewEditor" spellcheck="false">${escapeHtml(manuscript)}</textarea>` : `<div class="annotated-copy" id="annotatedCopy">${annotatedManuscript(manuscript, [], risks)}</div>`}<footer><span>红色 = 需要人工判断的发布风险</span>${state.reviewMode === "edit" ? '<button data-action="save-review">保存全文</button>' : '<button data-action="review-edit">进入修改</button>'}</footer></article>
+      <div class="workbench-resizer" data-resize-handle title="左右拖动调整宽度">↔</div>
+      <aside class="combined-review"><section><div class="combined-review-title"><div><b>违禁词与风险表达</b><span>本环节不进行事实搜索</span></div><em>${activeRisks.length} 条待处理</em></div><div class="compliance-list">${riskContent}</div></section>${archiveMarkup}</aside>
+    </div>`;
 }
 
 function selectableGroup(title, subtitle, type, items) {
@@ -585,7 +644,7 @@ function publishStage() {
   const publish = state.workspace.publish;
   const pronunciations = publish.pronunciations || [];
   return `
-    <div class="stage-heading"><div><span>STEP 05</span><h2>选择发布素材</h2><p>选中的标题会同步成为左侧稿件标题，再把描述、标签和评论区话术组成发布方案。</p></div><button class="outline-action" data-action="copy-package">复制已选方案</button></div>
+    <div class="stage-heading"><div><span>STEP 06</span><h2>选择发布素材</h2><p>选中的标题会同步成为左侧稿件标题，再把描述、标签和评论区话术组成发布方案。</p></div><button class="outline-action" data-action="copy-package">复制已选方案</button></div>
     ${stageControlsMarkup()}
     <div class="publish-grid">
       ${selectableGroup("劲爆标题", "可以吸引人，但正文必须接得住", "title", publish.titles || [])}
@@ -597,7 +656,7 @@ function publishStage() {
     </div>`;
 }
 
-const renderers = { source: sourceStage, rewrite: rewriteStage, openings: openingsStage, review: reviewStage, publish: publishStage };
+const renderers = { source: sourceStage, rewrite: rewriteStage, openings: openingsStage, review: reviewStage, compliance: complianceStage, publish: publishStage };
 
 function bindStageEvents() {
   const sourceEditor = $("#sourceEditor");
@@ -716,10 +775,46 @@ function showSelectionBubble(selection, anchor = null) {
   bubble.hidden = false;
   const range = window.getSelection()?.rangeCount ? window.getSelection().getRangeAt(0) : null;
   const rect = range?.getBoundingClientRect?.();
-  const left = rect?.width ? rect.right - 132 : (anchor?.clientX || Math.round(window.innerWidth * 0.62));
+  const bubbleWidth = state.activeStage === "review" ? 238 : 132;
+  const left = rect?.width ? rect.right - bubbleWidth : (anchor?.clientX || Math.round(window.innerWidth * 0.62));
   const top = rect?.width ? rect.bottom + 8 : (anchor?.clientY || Math.round(window.innerHeight * 0.55));
-  bubble.style.left = `${Math.min(window.innerWidth - 142, Math.max(12, left))}px`;
+  bubble.style.left = `${Math.min(window.innerWidth - bubbleWidth - 12, Math.max(12, left))}px`;
   bubble.style.top = `${Math.min(window.innerHeight - 46, Math.max(12, top))}px`;
+}
+
+async function verifySelectedText() {
+  const selection = state.selectionEdit;
+  if (state.activeStage !== "review") return showToast("请在“事实核验”环节选择需要校验的句子");
+  const claim = String(selection?.selected || "").trim();
+  if (claim.length < 2) return showToast("请先选中一句需要校验的文字");
+  const existing = (state.workspace.factChecks || []).find((item) => item.status === "pending" && item.claim === claim);
+  let item = existing;
+  if (!item) {
+    const query = claim.replace(/[，。！？；：、,.!?;:“”"'（）()《》]/gu, " ").replace(/\s+/gu, " ").trim().slice(0, 60);
+    item = {
+      id: `fact-manual-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+      claim,
+      sourceQuery: query || claim.slice(0, 60),
+      searchQueries: [],
+      confidence: 100,
+      level: "recommended",
+      summary: "由你手动选中，需要搜索可靠来源后才能判断。",
+      suggestion: "",
+      sources: [],
+      status: "pending",
+      manual: true,
+      verificationRequested: false,
+      verificationComplete: false
+    };
+    state.workspace.factChecks.unshift(item);
+  }
+  state.selectionEdit = null;
+  state.selectionProposal = null;
+  await saveWorkspace();
+  renderStage();
+  const verifyButton = $(`[data-source-search][data-id="${CSS.escape(item.id)}"]`, els.stageContent);
+  if (!verifyButton) return showToast("已加入待校验清单，请点击“开始校验”");
+  await searchFactSources(verifyButton);
 }
 
 function openSelectionAssistant() {
@@ -864,7 +959,7 @@ async function goNextStage() {
   } else if (state.activeStage === "openings") {
     if (!state.workspace.openingOptions.some((item) => item.selected) || !state.workspace.endingOptions.some((item) => item.selected)) return showToast("请先各选一个开头和结尾");
     await handleStageAction("assemble");
-  } else if (state.activeStage === "review" && state.rewriteDirty && $("#reviewEditor")) {
+  } else if (["review", "compliance"].includes(state.activeStage) && state.rewriteDirty && $("#reviewEditor")) {
     await handleStageAction("save-review");
   }
   const next = stageOrder[stageOrder.indexOf(state.activeStage) + 1];
@@ -888,7 +983,8 @@ function stageHasOutput(stage) {
   if (stage === "source") return isMeaningful(state.project.files.corrected.content);
   if (stage === "rewrite") return isMeaningful(state.project.files.voiceover.content) || isMeaningful(state.project.files.styled.content);
   if (stage === "openings") return Boolean(state.workspace.openingOptions?.length && state.workspace.endingOptions?.length);
-  if (stage === "review") return Boolean(state.workspace.factChecks?.length || state.workspace.complianceIssues?.length);
+  if (stage === "review") return Boolean(state.workspace.factChecks?.length);
+  if (stage === "compliance") return Boolean(state.workspace.complianceIssues?.length);
   if (stage === "publish") return Boolean(state.workspace.publish?.titles?.length);
   return false;
 }
@@ -898,7 +994,8 @@ function stageActionLabel(stage) {
     source: ["AI 整理原稿", "AI 重新整理原稿"],
     rewrite: ["AI 生成改写稿", "AI 重新生成改写稿"],
     openings: ["AI 生成开头结尾", "AI 重新生成开头结尾"],
-    review: ["AI 校验全文", "AI 重新校验全文"],
+    review: ["AI 识别待核验句", "AI 重新识别待核验句"],
+    compliance: ["AI 检测风险表达", "AI 重新检测风险表达"],
     publish: ["AI 生成发布素材", "AI 重新生成发布素材"]
   };
   return labels[stage]?.[stageHasOutput(stage) ? 1 : 0] || "AI 生成";
@@ -916,7 +1013,7 @@ function stageControlsMarkup(instructionOverride = null) {
 }
 
 function compareToolsMarkup() {
-  const reviewing = state.activeStage === "review";
+  const reviewing = ["review", "compliance"].includes(state.activeStage);
   const enabled = reviewing ? state.workspace.ui?.reviewSyncScroll === true : state.workspace.ui?.syncScroll !== false;
   return `<div class="compare-tools"><span>双栏对照</span><button class="${enabled ? "active" : ""}" data-action="toggle-scroll-sync">${enabled ? "✓ 取消跟随" : "开启一键跟随"}</button><em>${enabled ? "跟随已开启：滚动任意一栏，另一栏会按相同比例跟随" : "两栏可独立滚动"}</em></div>`;
 }
@@ -967,7 +1064,7 @@ function renderStage() {
   const nextStage = stageOrder[currentIndex + 1];
   els.stageContent.innerHTML = `
     ${renderers[state.activeStage]()}
-    <button class="selection-bubble" id="selectionBubble" data-action="selection-open" hidden>✦ AI 改写</button>
+    <div class="selection-bubble" id="selectionBubble" hidden><button data-action="selection-open">✦ AI 改写</button>${state.activeStage === "review" ? '<button class="verify-selection-button" data-action="selection-verify">⌕ 校验所选句</button>' : ""}</div>
     ${state.selectionUndo ? '<button class="selection-undo" data-action="selection-undo">↶ 撤回刚才的采用</button>' : ""}
     <aside class="selection-assistant" id="selectionAssistant" hidden>
       <div><span>已选中文字</span><button data-action="selection-cancel" aria-label="关闭选区编辑">×</button></div>
@@ -1024,7 +1121,7 @@ async function selectProject(id) {
     state.project = data.project;
     state.workspace = loadWorkspace(data.project);
     state.activeStage = state.workspace.currentStage || "source";
-    if (["facts", "compliance"].includes(state.activeStage)) state.activeStage = "review";
+    if (state.activeStage === "facts") state.activeStage = "review";
     if (!renderers[state.activeStage]) state.activeStage = "source";
     state.sourceDirty = state.correctedDirty = state.rewriteDirty = false;
     renderProject();
@@ -1127,7 +1224,7 @@ async function handleStageAction(action) {
       showToast(`完整定稿已保存 · ${textLength(complete)} 字`);
     } else if (action === "more-options") await runAIStage({ stageOverride: "openings", bypassPrompt: true });
     else if (action === "toggle-scroll-sync") {
-      const key = state.activeStage === "review" ? "reviewSyncScroll" : "syncScroll";
+      const key = ["review", "compliance"].includes(state.activeStage) ? "reviewSyncScroll" : "syncScroll";
       state.workspace.ui[key] = state.workspace.ui[key] !== true;
       await saveWorkspace(); renderStage(); showToast(state.workspace.ui[key] ? "双栏已开启一键跟随" : "双栏已取消跟随");
     }
@@ -1138,6 +1235,7 @@ async function handleStageAction(action) {
     else if (action === "rewrite-notes" || action === "stage-instructions") openStagePrompt(state.activeStage);
     else if (action === "open-chat") openChat();
     else if (action === "selection-open") openSelectionAssistant();
+    else if (action === "selection-verify") await verifySelectedText();
     else if (action === "selection-cancel") { state.selectionEdit = null; state.selectionProposal = null; const panel = $("#selectionAssistant"), bubble = $("#selectionBubble"); if (panel) panel.hidden = true; if (bubble) bubble.hidden = true; }
     else if (action === "selection-run") await runSelectionEdit();
     else if (action === "selection-retry") await runSelectionEdit();
@@ -1254,50 +1352,96 @@ async function openSourcePreview(button) {
 async function searchFactSources(button) {
   const item = state.workspace.factChecks?.find((entry) => entry.id === button.dataset.id);
   if (!item) return;
+  const wasQueued = !item.verificationRequested;
   const queryInput = $(`[data-source-query][data-id="${CSS.escape(item.id)}"]`, els.stageContent);
   const query = (queryInput?.value || item.sourceQuery || `${item.claim} ${item.summary || ""}`).trim();
   if (!query) return showToast("请先填写检索词");
   if (queryInput) { item.sourceQuery = query; queryInput.value = query; }
+  item.verificationRequested = true;
+  item.verificationComplete = false;
+  item.sources = [];
+  item.searchTrace = [];
+  item.suggestion = "";
+  delete item.verdict;
+  delete item.verdictReasoning;
+  delete item.correctStatement;
   await saveWorkspace();
+  if (wasQueued) {
+    state.sourceSearches[item.id] = { status: "running", percent: 0, message: "正在准备这条事实的搜索校验" };
+    renderStage();
+    button = $(`[data-source-search][data-id="${CSS.escape(item.id)}"]`, els.stageContent) || button;
+  }
   const startedAt = Date.now();
-  const setStatus = (status, message) => {
-    state.sourceSearches[item.id] = { status, message };
+  const setStatus = (status, message, percent = state.sourceSearches[item.id]?.percent || 0) => {
+    state.sourceSearches[item.id] = { status, message, percent };
     let statusNode = $(`[data-source-search-status="${CSS.escape(item.id)}"]`, els.stageContent);
     if (!statusNode) {
       const row = button.closest(".source-query-row");
       row?.insertAdjacentHTML("afterend", `<div class="source-search-status" data-source-search-status="${escapeHtml(item.id)}"></div>`);
       statusNode = $(`[data-source-search-status="${CSS.escape(item.id)}"]`, els.stageContent);
     }
-    if (statusNode) { statusNode.className = `source-search-status ${status}`; statusNode.textContent = message; }
+    if (statusNode) {
+      statusNode.className = `source-search-status ${status}`;
+      statusNode.innerHTML = `<div><span>${escapeHtml(message)}</span><b>${percent}%</b></div><i><u style="width:${percent}%"></u></i>`;
+    }
   };
   button.disabled = true;
-  button.textContent = "搜索中…";
-  setStatus("running", "正在并行检索多个问法、筛选来源并读取正文证据 · 0 秒");
-  clearInterval(sourceSearchTimer);
-  sourceSearchTimer = setInterval(() => {
-    const elapsed = Math.floor((Date.now() - startedAt) / 1000);
-    setStatus("running", `正在检索、去重并核对正文证据 · ${elapsed} 秒`);
-  }, 1000);
+  button.textContent = "0% · 准备研究";
+  setStatus("running", "正在建立事实核验计划 · 0 秒", 0);
   try {
-    const data = await request("/api/source-search", {
-      method: "POST",
-      body: JSON.stringify({ query, claim: item.claim, queries: Array.isArray(item.searchQueries) ? item.searchQueries : [], provider: selectedProvider(), model: selectedModel() })
+    const data = await requestResearchStream({
+      query,
+      claim: item.claim,
+      queries: Array.isArray(item.searchQueries) ? item.searchQueries : [],
+      provider: selectedProvider(),
+      model: selectedModel()
+    }, (event) => {
+      const elapsed = Math.floor((Date.now() - startedAt) / 1000);
+      const percent = Math.min(82, Math.round((Number(event.percent) || 0) * 0.82));
+      button.textContent = `${percent}% · ${event.label}`;
+      setStatus("running", `${event.label}${event.detail ? `：${event.detail}` : ""} · ${elapsed} 秒`, percent);
     });
     item.sources = data.sources || [];
+    item.searchPlan = data.plan || null;
+    item.searchTrace = data.trace || [];
+    item.searchAnswer = data.answer || "";
+    delete item.verdict;
+    delete item.verdictReasoning;
+    delete item.correctStatement;
+    if (item.sources.length && hasAIKey()) {
+      setStatus("running", "来源正文已找到，AI 正在判断支持、反驳或证据不足", 84);
+      await verifyFactWithAI(item, (event) => {
+        const percent = Math.min(99, 84 + Math.round((Number(event.percent) || 0) * 0.15));
+        button.textContent = `${percent}% · ${event.label || "验证证据"}`;
+        setStatus("running", `${event.label || "AI 正在验证证据"}${event.detail ? `：${event.detail}` : ""}`, percent);
+      });
+    }
+    item.verificationComplete = true;
+    if (item.verdict === "refuted" && item.correctStatement) item.suggestion = item.correctStatement;
+    else if (item.verdict === "nei") item.suggestion = `有说法认为${item.claim}，但尚待更多可靠资料核实。`;
     const elapsed = Math.floor((Date.now() - startedAt) / 1000);
+    const verdictLabel = { supported: "证据支持", refuted: "证据反驳", nei: "证据不足" }[item.verdict] || "已找到正文证据，待人工判断";
     state.sourceSearches[item.id] = item.sources.length
-      ? { status: "success", message: `搜索完成：保留 ${item.sources.length} 个有正文证据的来源 · ${elapsed} 秒。${data.answer || ""}` }
-      : { status: "empty", message: `搜索完成：没有来源通过正文证据与语义复核 · ${elapsed} 秒。${data.answer || "可换词重试"}` };
+      ? { status: "success", percent: 100, message: `搜索校验完成：${verdictLabel}，保留 ${item.sources.length} 个正文来源 · ${elapsed} 秒。` }
+      : { status: "empty", percent: 100, message: `研究完成：没有来源通过正文证据与语义复核 · ${elapsed} 秒。${data.answer || "可换词重试"}` };
     await saveWorkspace();
+    const pageY = window.scrollY;
+    const manuscriptScroll = $("#annotatedCopy")?.scrollTop ?? $("#reviewEditor")?.scrollTop ?? 0;
+    const reviewScroll = $(".combined-review", els.stageContent)?.scrollTop || 0;
     renderStage();
-    showToast(item.sources.length ? `找到 ${item.sources.length} 个权威来源，请打开核对` : "没有找到足够可靠的来源，这条断言应谨慎保留");
+    requestAnimationFrame(() => {
+      window.scrollTo({ top: pageY });
+      const manuscriptPane = $("#annotatedCopy") || $("#reviewEditor");
+      const reviewPane = $(".combined-review", els.stageContent);
+      if (manuscriptPane) manuscriptPane.scrollTop = manuscriptScroll;
+      if (reviewPane) reviewPane.scrollTop = reviewScroll;
+    });
+    showToast(item.sources.length ? `${verdictLabel} · 已找到 ${item.sources.length} 个正文来源` : "没有找到足够可靠的来源，这条断言应谨慎保留");
   } catch (error) {
     setStatus("error", `搜索失败：${error.message}，可修改检索词后重试`);
     showToast(error.message);
     button.disabled = false;
-    button.textContent = "⌕ 重试";
-  } finally {
-    clearInterval(sourceSearchTimer);
+    button.textContent = "↻ 重试搜索校验";
   }
 }
 
@@ -1321,6 +1465,9 @@ async function searchAllFactSources(button) {
         });
         const sources = data.sources || [];
         state.workspace.factChecks[index].sources = sources;
+        state.workspace.factChecks[index].searchPlan = data.plan || null;
+        state.workspace.factChecks[index].searchTrace = data.trace || [];
+        state.workspace.factChecks[index].searchAnswer = data.answer || "";
         delete state.workspace.factChecks[index].verdict;
         delete state.workspace.factChecks[index].verdictReasoning;
         delete state.workspace.factChecks[index].correctStatement;
@@ -1343,6 +1490,17 @@ async function searchAllFactSources(button) {
   }
 }
 
+async function verifyFactWithAI(item, onProgress = () => {}) {
+  const data = await requestAIStream({
+    provider: selectedProvider(), stage: "verify", model: selectedModel(),
+    payload: { claim: item.claim, sources: item.sources, settings: state.workspace.settings }
+  }, onProgress);
+  item.verdict = data.result.verdict;
+  item.verdictReasoning = data.result.reasoning;
+  item.correctStatement = data.result.correctStatement || "";
+  return item.verdict;
+}
+
 async function verifyFactEvidence(button) {
   const item = state.workspace.factChecks?.find((entry) => entry.id === button.dataset.id);
   if (!item) return;
@@ -1351,13 +1509,7 @@ async function verifyFactEvidence(button) {
   const originalText = button.textContent;
   button.textContent = "AI 正在阅读来源正文…";
   try {
-    const data = await requestAIStream({
-      provider: selectedProvider(), stage: "verify", model: selectedModel(),
-      payload: { claim: item.claim, sources: item.sources, settings: state.workspace.settings }
-    }, (event) => { button.textContent = `${Number(event.percent) || 0}% · ${event.label || "验证中"}`; });
-    item.verdict = data.result.verdict;
-    item.verdictReasoning = data.result.reasoning;
-    item.correctStatement = data.result.correctStatement || "";
+    await verifyFactWithAI(item, (event) => { button.textContent = `${Number(event.percent) || 0}% · ${event.label || "验证中"}`; });
     await saveWorkspace();
     renderStage();
     const label = { supported: "证据支持该说法", refuted: "证据与该说法矛盾", nei: "证据不足，无法判断" };
@@ -1616,7 +1768,7 @@ async function runAIStage({ stageOverride, bypassPrompt = false } = {}) {
   const payload = currentAIPayload();
   const requiredText = effectiveStage === "source" ? payload.source : effectiveStage === "rewrite" ? payload.corrected : payload.draft;
   if (!requiredText || textLength(requiredText) < 20) return showToast("请先准备好当前环节需要的稿件");
-  if (effectiveStage === "review" && state.rewriteDirty) {
+  if (["review", "compliance"].includes(effectiveStage) && state.rewriteDirty) {
     await saveFile("voiceover", `# 最终口播稿\n\n${payload.draft.trim()}\n`);
     state.rewriteDirty = false;
   }
@@ -1633,7 +1785,7 @@ async function runAIStage({ stageOverride, bypassPrompt = false } = {}) {
   }, 1000);
   renderProjectHeader();
   try {
-    const stages = effectiveStage === "review" ? ["facts", "compliance"] : [effectiveStage];
+    const stages = effectiveStage === "review" ? ["facts"] : [effectiveStage];
     let totalTokens = 0;
     let rewriteInfo = null;
     for (let stageIndex = 0; stageIndex < stages.length; stageIndex += 1) {
@@ -1646,15 +1798,13 @@ async function runAIStage({ stageOverride, bypassPrompt = false } = {}) {
         }
       } : payload;
       const data = await requestAIStream({ provider: selectedProvider(), stage, model: selectedModel(), payload: stagePayload }, (event) => {
-        const percent = effectiveStage === "review"
-          ? Math.round(((stageIndex + (Number(event.percent) || 0) / 100) / stages.length) * 100)
-          : Number(event.percent) || 0;
+        const percent = Number(event.percent) || 0;
         setAIProgress({ percent, label: event.label, detail: event.detail });
       });
       setAIProgress({
         label: stage === "facts" ? "事实核验已返回，正在保存" : stage === "compliance" ? "风险检查已返回，正在保存" : "AI 已返回，正在保存结果",
         detail: "正在写入当前稿件工作区",
-        percent: effectiveStage === "review" ? (stageIndex === 0 ? 52 : 88) : 82
+        percent: 92
       });
       await applyAIResult(stage, data.result);
       totalTokens += Number(data.usage?.total_tokens || 0);

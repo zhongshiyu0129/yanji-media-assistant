@@ -377,11 +377,14 @@ export async function searchWebSources(query, options = {}) {
     : [query, ...(Array.isArray(options.queries) ? options.queries.filter(Boolean) : [])].filter(Boolean);
   if (!rawList.length) return [];
 
-  const textList = [...new Set(rawList.flatMap((q) => {
-    const original = String(q).replace(/\s+/gu, " ").trim();
-    const focused = evidenceQuery(original);
-    return [original, focused, focused ? `${focused} 资料` : ""];
-  }).filter(Boolean))].slice(0, 6);
+  // 先保留 AI 明确生成的不同检索角度，再补充实体化问法。否则每条问法的扩写
+  // 会挤掉后面的“反向证据”或“官方来源”查询，导致结果天然偏向单一结论。
+  const originals = [...new Set(rawList.map((q) => String(q).replace(/\s+/gu, " ").trim()).filter(Boolean))];
+  const focused = originals.flatMap((original) => {
+    const value = evidenceQuery(original);
+    return value && value !== original ? [value, `${value} 资料`] : [];
+  });
+  const textList = [...new Set([...originals, ...focused])].slice(0, 6);
   if (!textList.length) return [];
   const primaryText = textList[0];
   const serperKey = options.serperApiKey || options.searchApiKey || process.env.SERPER_API_KEY || "";
