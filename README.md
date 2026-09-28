@@ -15,6 +15,11 @@
   从原稿整理、深度改写到事实核验和发布包装，每一步都能看、能改、能追溯。
 </p>
 
+<p align="center">
+  <a href="https://yanji-media-assistant.onrender.com"><strong>▶ 在线体验言己</strong></a>
+  · 打开即用，无需配置 API Key
+</p>
+
 ---
 
 ## 为什么做「言己」
@@ -126,6 +131,8 @@ npm run dev
 ## 公开体验版部署
 
 仓库已经包含 [`render.yaml`](./render.yaml)，可以部署成任何人打开即用的公开网站。部署后，访客不需要填写 API Key：DeepSeek 和 Serper Key 只保存在服务端环境变量里，不会出现在网页、README 或浏览器请求中。
+
+当前公开体验地址：[https://yanji-media-assistant.onrender.com](https://yanji-media-assistant.onrender.com)。免费实例长时间无人访问后会休眠，第一次打开可能需要等待约 50 秒。
 
 <p align="center">
   <a href="https://render.com/deploy?repo=https://github.com/zhongshiyu0129/yanji-media-assistant">
