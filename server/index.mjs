@@ -124,6 +124,7 @@ async function api(request, response, url) {
     return sendJson(response, 200, {
       ...ai.status(),
       publicDemo: publicRuntime.enabled,
+      ephemeral: publicRuntime.enabled && process.env.PUBLIC_EPHEMERAL === "true",
       keyStorage: publicRuntime.enabled ? "server_environment" : ai.status().keyStorage,
       dailyLimits: publicRuntime.enabled ? {
         ai: publicRuntime.limits.aiPerSession,

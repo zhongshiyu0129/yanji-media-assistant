@@ -2,7 +2,7 @@ services:
   - type: web
     name: yanji-media-assistant
     runtime: node
-    plan: starter
+    plan: free
     buildCommand: npm install && npm test
     startCommand: npm start
     healthCheckPath: /api/health
@@ -14,7 +14,9 @@ services:
       - key: APP_SECRET
         generateValue: true
       - key: YANJI_DATA_DIR
-        value: /var/data
+        value: /tmp/yanji-data
+      - key: PUBLIC_EPHEMERAL
+        value: "true"
       - key: DEEPSEEK_API_KEY
         sync: false
       - key: DEEPSEEK_MODEL
@@ -31,7 +33,3 @@ services:
         value: "300"
       - key: PUBLIC_PROJECT_LIMIT
         value: "8"
-    disk:
-      name: yanji-data
-      mountPath: /var/data
-      sizeGB: 1

@@ -2175,7 +2175,7 @@ async function init() {
       sessionStorage.removeItem(AI_KEY_STORAGE);
       sessionStorage.removeItem(SEARCH_KEY_STORAGE);
       $("#aiSettingsButton").hidden = true;
-      els.saveState.textContent = "已保存到你的匿名空间";
+      els.saveState.textContent = state.ai.ephemeral ? "已临时保存到匿名空间" : "已保存到你的匿名空间";
     }
     state.accountMemory = memory;
     state.projects = (await request("/api/projects")).projects;
