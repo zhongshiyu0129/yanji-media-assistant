@@ -12,7 +12,8 @@ test("fallback research plan preserves user queries and adds verification angles
   assert.equal(plan.claims.length, 1);
   assert.equal(plan.claims[0].text, "钮祜禄氏后来多改姓郎");
   assert.ok(plan.claims[0].queries.includes("钮祜禄 改姓 郎"));
-  assert.ok(plan.claims[0].queries.some((query) => query.includes("是否属实")));
+  assert.ok(plan.claims[0].queries.some((query) => /官方|博物馆|大学|论文/u.test(query)));
+  assert.ok(plan.claims[0].queries.some((query) => /争议|误传|辟谣/u.test(query)));
   assert.equal(new Set(plan.claims[0].queries).size, plan.claims[0].queries.length);
-  assert.ok(plan.claims[0].queries.length <= 5);
+  assert.ok(plan.claims[0].queries.length <= 6);
 });

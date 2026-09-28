@@ -1,238 +1,204 @@
-# 言己 · 口播稿重构助手
+<p align="center">
+  <img src="docs/banner.svg" alt="言己 · 口播稿重构助手" width="100%" />
+</p>
 
-一个把参考内容转化为个人表达的口播稿重构工具。言己先理解原稿的信息、结构和表达方法，再结合账号风格重写叙事、语言与节奏，让每一次改写都有可追踪的过程和可直接录制的成稿。
+<p align="center">
+  <img alt="Node.js 20+" src="https://img.shields.io/badge/Node.js-20%2B-43853d?style=flat-square" />
+  <img alt="DeepSeek" src="https://img.shields.io/badge/AI-DeepSeek-4d6bfe?style=flat-square" />
+  <img alt="OpenAI" src="https://img.shields.io/badge/AI-OpenAI-111111?style=flat-square" />
+  <img alt="Local First" src="https://img.shields.io/badge/Data-Local--first-6c5ce7?style=flat-square" />
+  <img alt="Tests" src="https://img.shields.io/badge/tests-18%20passing-2f9e68?style=flat-square" />
+</p>
 
-## 可视化工作台
+<p align="center">
+  一个面向中文口播创作的本地 AI 工作台。<br />
+  从原稿整理、深度改写到事实核验和发布包装，每一步都能看、能改、能追溯。
+</p>
 
-项目包含一个零外部依赖的本地 Web 工作台，按照口播稿创作的典型流程组织成六个环节：原稿整理、AI 改写、开头结尾、事实核验、违禁词检查和发布素材。稿件字数、选择结果和审查决定都会直接保存回现有 `projects/` 目录。
+---
 
-新建稿件后只需粘贴原文。系统会在输入停止后自动用 AI 生成侧栏短标题，识别历史、地理、时事等主领域和细分标签，并支持在左侧按领域快速筛选。
+## 为什么做「言己」
 
-```bash
-npm start
+常见的 AI 改稿工具只有一个输入框：原稿交进去，成稿吐出来，中间发生了什么看不见，也很难继续调整。
+
+言己把创作拆成六个可控环节。AI 负责处理，创作者负责判断；每一步的结果、要求、会话和选择都会保存在当前项目中，下一步继续使用同一份上下文。
+
+## 核心能力
+
+| 能力 | 说明 |
+| --- | --- |
+| 六步可视化工作流 | 原稿整理、AI 改写、开头结尾、事实核验、风险表达、发布素材 |
+| 真实 AI 进度 | 流式显示服务端当前处理阶段、百分比和耗时，支持重新生成 |
+| 双栏对照编辑 | 原稿与整理稿、整理稿与改写稿并排阅读，支持跟随滚动和拖动分栏 |
+| 选区 AI 共写 | 框选任意文字后发起局部改写，先预览，再采用、重试或撤回 |
+| 按需事实核验 | AI 先标记候选事实；只有用户点击后才搜索，也可手动框选句子校验 |
+| 研究式网页搜索 | 多角度生成检索词，读取网页正文，区分证据、正文相关来源和搜索线索 |
+| 风险表达独立检查 | 事实核验与平台风险分开，逐条选择保留或接受替换 |
+| 发布素材整包交付 | 完整正文、标题、描述、标签、互动话术和易错读音集中展示与复制 |
+| 项目级上下文 | 保存本篇对话、选区会话、生成任务、核验记录和每一步选择 |
+| 账号长期记忆 | 由用户确认后沉淀写作偏好，并注入后续每一次 AI 生成 |
+
+## 工作流
+
+```mermaid
+flowchart LR
+  A["01 原稿整理<br/>纠错 · 断句 · 大段落"] --> B["02 AI 改写<br/>结构 · 风格 · 字数校准"]
+  B --> C["03 开头结尾<br/>多方案选择 · 组合成稿"]
+  C --> D["04 事实核验<br/>先识别 · 再按需搜索"]
+  D --> E["05 风险表达<br/>违禁词 · 对立 · 承诺"]
+  E --> F["06 发布素材<br/>正文 · 标题 · 描述 · 标签"]
 ```
 
-然后访问：
+### 1. 原稿整理
 
-```text
-http://127.0.0.1:4173
-```
+填写原标题、来源平台、作者和链接，也可以只粘贴原文。AI 仅修正错字、语音转写、标点和断句，并整理成适合口播的大段落。
 
-开发时可以使用 `npm run dev`，文件变化后服务会自动重启。六个环节支持 DeepSeek 和 OpenAI；默认使用 DeepSeek，可在网页设置中切换。OpenAI 模式的事实核验可以额外使用 Web Search，DeepSeek 模式会明确标注无法实时联网，不会伪造已浏览的来源。
+### 2. AI 改写
 
-### 连接 AI
+按账号风格重组结构与表达，支持设置目标字数。服务端会自动校准，最终字数与目标相差不超过 100 字。
 
-最方便的方式是在网页左下角打开“AI 设置”，选择服务并填写 API Key。通过网页填写的密钥只保存在当前浏览器会话的 `sessionStorage`，不会写入项目文件。关闭该浏览器会话后需要重新填写。
+### 3. 开头结尾
 
-也可以在启动服务前通过本机环境变量提供：
+生成多个开头和结尾方向，由用户分别选择后组成完整稿。旧内容会保留划线记录，方便回看替换前后。
 
-```bash
-DEEPSEEK_API_KEY="你的密钥" DEEPSEEK_MODEL="deepseek-flash" npm start
-```
+### 4. 事实核验
 
-项目也会自动读取被 Git 忽略的 `.env.local`。当前 DeepSeek 默认模型为 `deepseek-flash`，也可以在网页设置中修改。每次只运行当前选中的环节，便于检查结果并控制调用成本。
+AI 第一遍只识别可能需要验证的句子，不联网、不下结论。点击“开始校验”后才会：
 
-### 来源搜索配置（可选但推荐）
+1. 把复合说法拆成独立事实；
+2. 从直接关系、权威来源、争议与反例等角度搜索；
+3. 读取候选网页正文；
+4. 区分支持、反驳、证据不足和仅供继续查找的线索。
 
-事实核验环节需要联网检索证据来源。有两种方式：
+没有被 AI 标黄的句子，也可以手动框选后点击“校验所选句”。
 
-1. **稳定搜索 API（推荐）**：到 [serper.dev](https://serper.dev) 免费注册（Google/GitHub 账号即可，无需信用卡），获得 2500 次免费查询额度。把 Key 填到网页设置的"来源搜索 Key"，或设置环境变量 `SERPER_API_KEY`。
-2. **免费网页搜索（默认 fallback）**：不配置 Key 时，系统会通过必应/DuckDuckGo/搜狗的公开网页检索，无需注册但可能被搜索引擎限流，结果不够稳定。
+### 5. 风险表达
 
-## 项目特点
+单独检查歧视、煽动对立、危险行为、医疗或商业承诺、低俗表达及绝对化说法，不与事实搜索混在一起。
 
-- **项目制管理**：每条稿件对应 `projects/<project-slug>/` 下的独立工作区，输入、过程、最终稿和日志互不混杂。
-- **半自动工作流**：默认在关键节点暂停确认，避免 AI 静默生成不符合账号风格或事实风险较高的内容。
-- **表达学习优先**：先提取原稿中的金句、情绪句、悬念句、类比和节奏，再进入改写，做到学习表达手法而不是照搬原文。
-- **账号记忆沉淀**：通过 `memory/content_memory.md` 记录可复用经验，帮助后续稿件逐步贴近账号风格。
-- **合规与事实审查**：内置敏感词、平台规则、替代表达和事实资料目录，降低口播稿与字幕的发布风险。
-- **最终交付清爽**：`final/` 目录只保留可直接使用的口播稿和字幕安全版，过程稿、审查报告、发布文案留在 `process/`。
+### 6. 发布素材
 
-## 目录结构
-
-```text
-.
-├── skills/
-│   ├── media-workflow/          # 顶层项目编排工作流
-│   └── content-production/      # 口播稿生产、改写、审查、包装规则
-├── scripts/
-│   └── new_project.sh           # 创建新稿件项目的脚本
-├── projects/
-│   └── <project-slug>/          # 单条稿件项目目录
-├── memory/
-│   └── content_memory.md        # 全局内容生产经验记忆
-├── materials/
-│   ├── input/                   # 临时/全局原始稿输入
-│   ├── output/                  # 临时/全局阶段输出
-│   ├── profile/                 # 账号定位、写作风格、禁用风格
-│   ├── ideas/                   # 观点、案例素材、金句库
-│   ├── facts/                   # 事实来源、数据备注、存疑事实
-│   ├── compliance/              # 敏感词、平台规则、替代表达
-│   └── memory/                  # 旧版/兼容记忆文件
-└── 自媒体口播稿工作流_PRD.md      # 项目制工作流说明
-```
+集中展示最终正文、标题、视频描述、标签、评论区互动话术和易读错字词。可以继续修改正文，也可以一键复制完整发布方案。
 
 ## 快速开始
 
-### 1. 创建新项目
+### 环境要求
+
+- Node.js 20 或更高版本
+- DeepSeek 或 OpenAI API Key（二选一）
+- Serper API Key（可选，用于更稳定的 Google 搜索结果）
+
+### 启动
 
 ```bash
-scripts/new_project.sh 2026-05-16-yellow-river
+git clone https://github.com/zhongshiyu0129/yanji-media-assistant.git
+cd yanji-media-assistant
+cp .env.example .env.local   # 可选，也可以在网页中填写 Key
+npm start
 ```
 
-项目名建议使用日期加主题，例如：
+打开 [http://127.0.0.1:4173](http://127.0.0.1:4173)。
 
-```text
-2026-05-16-yellow-river
-2026-05-20-city-memory
-2026-06-01-history-story
+开发模式会在服务端文件变化后自动重启：
+
+```bash
+npm run dev
 ```
 
-脚本会生成如下目录：
+项目没有前端构建步骤，也没有运行时第三方依赖。
 
-```text
-projects/<project-slug>/
-├── input/
-│   └── original_script.md
-├── context/
-│   └── project_brief.md
-├── process/
-│   └── source_extraction.md
-├── final/
-│   ├── voiceover.md
-│   └── subtitle.md
-└── logs/
-    └── workflow_log.md
+## 配置
+
+可以在网页左下角的“AI 设置”中填写。网页填写的 Key 只保存在当前浏览器会话，不会写入项目文件。
+
+也可以复制 `.env.example` 为 `.env.local`：
+
+```dotenv
+# DeepSeek
+DEEPSEEK_API_KEY=
+DEEPSEEK_MODEL=deepseek-flash
+
+# OpenAI
+OPENAI_API_KEY=
+OPENAI_MODEL=gpt-5.4-mini
+
+# 事实核验搜索
+SERPER_API_KEY=
+
+# 本地端口
+PORT=4173
 ```
 
-### 2. 填写原始稿
+`.env.local` 已被 Git 忽略。请勿把真实密钥提交到仓库。
 
-把已经提取好的原视频口播稿粘贴到：
+### 搜索策略
 
-```text
-projects/<project-slug>/input/original_script.md
+配置 `SERPER_API_KEY` 时，事实核验优先使用 Serper 返回的 Google 搜索结果；未配置时会尝试 Bing、DuckDuckGo 和搜狗作为降级方案。搜索结果必须经过正文读取和核心事实匹配，不能只凭标题下结论。
+
+## 架构
+
+```mermaid
+flowchart TB
+  UI["Web 工作台<br/>HTML · CSS · Vanilla JS"] --> API["Node.js HTTP 服务"]
+  API --> AI["AI Service<br/>DeepSeek / OpenAI"]
+  API --> RESEARCH["Research Service<br/>查询规划 · 多源检索 · 证据筛选"]
+  API --> STORE["Project Store<br/>本地文件持久化"]
+  RESEARCH --> SERPER["Serper / 公开搜索引擎"]
+  RESEARCH --> WEB["网页正文读取"]
+  STORE --> PROJECTS["projects/<id>"]
+  STORE --> ACCOUNT["accounts/default"]
 ```
 
-建议同时补充来源平台、原视频标题、作者、发布时间、链接、本项目要求、希望保留与希望避免的表达。
+| 目录 | 作用 |
+| --- | --- |
+| `web/` | 工作台页面、六步交互、双栏编辑与会话界面 |
+| `server/index.mjs` | HTTP 服务、静态文件与 API 路由 |
+| `server/ai-service.mjs` | AI 提示词、结构化输出、字数与段落校准 |
+| `server/research-service.mjs` | 事实拆解、多轮搜索、来源复核和检索轨迹 |
+| `server/source-preview.mjs` | 搜索引擎接入、网页正文提取和安全校验 |
+| `server/project-store.mjs` | 项目创建、读取、保存和回收站管理 |
+| `projects/` | 每篇稿件的输入、状态、最终稿和记录 |
+| `accounts/default/` | 账号风格、合规规则、素材与长期偏好 |
+| `test/` | Node.js 原生测试套件 |
 
-### 3. 运行工作流
+## 上下文与长期记忆
 
-在支持本仓库 skills 的 AI 编码/写作环境中，对助手说：
+言己不会把所有历史无上限地塞给模型，而是分层管理：
 
-```text
-请运行 media-workflow 处理 projects/<project-slug>
+- **当前正文**：原稿、整理稿和当前完整稿；
+- **本篇上下文**：最近 20 条整篇对话、30 条任务记录、12 组选区会话；
+- **本篇记忆**：对当前稿件分析出的稳定修改规律；
+- **账号长期偏好**：用户确认后写入 `accounts/default/memory/editorial_memory.json`；
+- **固定账号资料**：账号定位、写作风格和风险规则。
+
+长期偏好会在每次 AI 请求时重新读取，并作为“账号长期改稿记忆”注入整理、改写、首尾、核验、风险检查、发布素材和对话等环节。
+
+“会话与生成记录”页面展示真实保存的生成任务、整篇对话、选区改写和搜索校验，不记录每一次键盘输入。
+
+## 本地数据与隐私
+
+- 稿件和创作状态默认保存在本机 `projects/`。
+- 删除项目时会先移动到 `projects/.trash/`，方便恢复。
+- 浏览器中填写的 Key 使用会话级存储，关闭会话后失效。
+- `.env.local`、本地回收站和运行时数据不应提交到 Git。
+- 调用 AI 或搜索服务时，对应文本会发送给所配置的第三方服务，请根据内容敏感程度自行决定是否使用。
+
+## 测试
+
+```bash
+npm test
 ```
 
-默认会进入半自动模式，在关键节点向你确认方向。
+测试覆盖 AI 结构化输出、事实识别不提前联网、改写字数校准、选区编辑、查询规划、搜索短语保留、项目存储和网页预览安全等关键路径。
 
-## 工作流阶段
+## 设计原则
 
-1. **项目识别**：确认要处理的 `projects/<project-slug>/`。
-2. **读取输入**：加载原始稿、项目 brief、账号资料、合规资料和全局记忆。
-3. **原稿表达提取**：提取金句、情绪句、悬念句、类比、节奏和事实点。
-4. **用户确认学习方向**：确认哪些表达手法可以学习，哪些必须规避。
-5. **轻度校正**：修正明显语病和表达问题，不改变原意。
-6. **开头重写**：生成悬念型、反差型、事实冲击型等开头方向。
-7. **降重改写**：避免照搬原结构和特色表述。
-8. **内容深化**：增强画面感、知识密度、情绪层次或克制表达。
-9. **风格融合**：结合账号资料和历史记忆统一口吻。
-10. **事实与合规审查**：检查事实存疑、敏感表达、逻辑跳跃和平台风险。
-11. **最终口播稿**：生成可直接录制的 `voiceover.md`。
-12. **字幕安全版**：生成更适合发布平台字幕的 `subtitle.md`。
-13. **发布包装**：在过程目录生成标题、封面文案、简介、标签和推荐组合。
-14. **记忆建议**：生成是否写入全局记忆的建议，需用户确认后再追加。
+- AI 生成必须可见、可修改、可重新生成。
+- 事实识别不等于事实判断，搜索必须由用户主动触发。
+- 搜索结果相关不等于证据成立，正文和来源质量必须单独判断。
+- 长期偏好必须由用户确认，不能从一次偶然修改中擅自学习。
+- 任何环节都保留人工控制权，最终决定始终由创作者做出。
 
-## 默认确认节点
+---
 
-工作流默认不是“一键静默跑完”，会在这些节点暂停：
-
-1. **原视频学习**：确认要学习哪些金句、情绪句、悬念、类比和节奏。
-2. **开头方向**：选择悬念型、反差型、强事实冲击型或年代共情型等方向。
-3. **风格方向**：确认更有画面、更有知识密度、更有情绪，还是更克制。
-4. **风险处理**：对事实存疑、敏感词、过强表达选择删除、弱化或补证据。
-5. **Memory 更新**：确认本次经验是否写入 `memory/content_memory.md`。
-
-如需全自动处理，需要在指令中明确说明。
-
-## 输出文件
-
-最终交付只放在：
-
-```text
-projects/<project-slug>/final/voiceover.md
-projects/<project-slug>/final/subtitle.md
-```
-
-其他过程产物通常位于：
-
-```text
-projects/<project-slug>/process/source_extraction.md
-projects/<project-slug>/process/review_report.md
-projects/<project-slug>/process/publish_package.md
-projects/<project-slug>/process/memory_update.md
-projects/<project-slug>/logs/workflow_log.md
-```
-
-## 内容原则
-
-- 要有悬念，但不能造假。
-- 要学习原稿的表达技巧，但不能照搬原文。
-- 要有画面感、类比、反差和尺度感。
-- 要理性、客观，不煽动、不制造对立。
-- 要保留能打动人的表达，而不是把稿子改成说明文。
-- 高风险事实必须弱化、删除、标注待补证据，或用可信来源支撑。
-
-## 示例项目
-
-仓库中包含一个样例项目：
-
-```text
-projects/2026-05-16-yellow-river/
-```
-
-可以重点查看：
-
-```text
-projects/2026-05-16-yellow-river/process/source_extraction.md
-projects/2026-05-16-yellow-river/process/review_report.md
-projects/2026-05-16-yellow-river/process/publish_package.md
-projects/2026-05-16-yellow-river/final/voiceover.md
-projects/2026-05-16-yellow-river/final/subtitle.md
-```
-
-## 自定义资料
-
-你可以根据自己的账号继续维护这些文件：
-
-- `materials/profile/account_profile.md`：账号定位、目标观众、内容边界。
-- `materials/profile/writing_style.md`：常用语气、节奏、表达偏好。
-- `materials/profile/prohibited_style.md`：不希望出现的表达方式。
-- `materials/ideas/my观点.md`：可复用观点。
-- `materials/ideas/案例素材.md`：案例和素材库。
-- `materials/ideas/金句库.md`：自有金句库。
-- `materials/facts/fact_sources.md`：可引用事实来源。
-- `materials/compliance/sensitive_words.md`：敏感词和风险表达。
-- `materials/compliance/replacement_rules.md`：安全替代表达规则。
-
-## 适用场景
-
-- 短视频口播稿二创与改写
-- 历史、人文、地理、社会观察类文案生产
-- 视频字幕安全化处理
-- 发布标题、封面文案、简介和标签生成
-- 账号长期风格记忆沉淀
-- 有过程留痕要求的内容生产
-
-## 开源前注意
-
-如果要将仓库发布到 GitHub，建议先检查并清理：
-
-- 原视频链接、作者、平台账号等可能不适合公开的信息。
-- `materials/profile/` 中的私人账号定位或商业策略。
-- `memory/` 中不希望公开的长期创作经验。
-- `projects/` 中包含版权风险、未授权稿件或敏感来源的样例。
-- 任何个人联系方式、客户信息、内部数据或未公开素材。
-
-## License
-
-如需开源，建议根据你的使用目标补充许可证，例如 MIT、Apache-2.0 或仅保留个人使用声明。
+<p align="center">如果这个项目对你有帮助，欢迎 Star 或提出改进建议。</p>

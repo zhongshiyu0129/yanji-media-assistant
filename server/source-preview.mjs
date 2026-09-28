@@ -146,6 +146,12 @@ async function serperSearch(query, apiKey) {
 
 export function evidenceQuery(value) {
   const compact = String(value || "").replace(/\s+/g, " ").trim();
+  // 用户手动输入的空格分词通常已经是最有价值的实体/关系短语。Intl.Segmenter
+  // 会把“穷养儿志”这类新词拆成单字，因此先保留 2—12 字的原始短语。
+  const rawPhrases = compact
+    .split(/[，。！？；：、,.!?;:“”"'（）()《》·—\s]+/u)
+    .map((phrase) => phrase.trim())
+    .filter((phrase) => phrase.length >= 2 && phrase.length <= 12 && !/^\d+$/u.test(phrase));
   // 领域核心词：原文直接出现则优先提取
   const domainPhrases = [
     "爱新觉罗", "钮祜禄", "叶赫那拉", "瓜尔佳", "八旗制度", "上三旗", "下五旗", "正黄旗", "镶黄旗", "正白旗",
@@ -295,10 +301,27 @@ export function evidenceQuery(value) {
     .filter((word) => word.length >= 2 && !stopWords.has(word) && !/^\d+$/u.test(word))
     .sort((a, b) => b.length - a.length);
   // 合并：领域词 + 推断词 + 长词优先，去重，取前5个
-  const merged = [...new Set([...domainPhrases, ...inferred, ...words])]
+  const merged = [...new Set([...rawPhrases, ...domainPhrases, ...inferred, ...words])]
     .filter((word) => word.length >= 2)
     .slice(0, 5);
   return merged.join(" ").slice(0, 60);
+}
+
+const SEARCH_MODIFIERS = new Set([
+  "官方", "资料", "权威", "来源", "出处", "原文", "全文", "网页", "网站", "文章", "新闻",
+  "博物馆", "大学", "高校", "论文", "学术", "研究", "报告", "档案", "古籍", "文献",
+  "是否属实", "真假", "事实", "核实", "查证", "争议", "反例", "反驳", "否定", "误传", "辟谣"
+]);
+
+function contentTerms(value) {
+  return [...new Set(evidenceQuery(value).split(/\s+/u).map((term) => term.trim()).filter((term) => term.length >= 2 && !SEARCH_MODIFIERS.has(term)))];
+}
+
+function coversClaimAnchors(value, terms) {
+  if (!terms.length) return true;
+  const compact = String(value || "").replace(/\s+/gu, "");
+  const hits = terms.filter((term) => compact.includes(term));
+  return hits.some((term) => term.length >= 3) || hits.length >= Math.min(2, terms.length);
 }
 
 const SEARCH_THROTTLE_MS = 900;
@@ -321,8 +344,9 @@ function scoreSource(item, terms, peopleTerms) {
     if (inTitle) { score += term.length >= 4 ? 5 : 3; titleHits += 1; }
     if (inExcerpt) { score += term.length >= 4 ? 2 : 1; excerptHits += 1; }
   }
-  // 标题必须至少匹配一个关键词，否则视为不相关（防止只靠域名蹭进来）
-  if (titleHits === 0) return 0;
+  // 标题没有命中时，只要摘要覆盖核心词也应保留。很多机构网页的标题很短，
+  // 真正相关的实体与关系只会出现在搜索摘要里。
+  if (titleHits === 0 && excerptHits === 0) return 0;
   if (peopleTerms.length >= 2) {
     const evidence = title + excerpt;
     const peopleHits = peopleTerms.filter((name) => evidence.includes(name)).length;
@@ -331,6 +355,7 @@ function scoreSource(item, terms, peopleTerms) {
   }
   if (titleHits >= 2) score += 3;
   if (titleHits >= 1 && excerptHits >= 1) score += 2;
+  if (excerptHits >= 2) score += 2;
   // 域名可信度加分（仅权威来源，百科类参考来源不加分）
   try {
     const host = new URL(item.url).hostname.toLowerCase();
@@ -339,6 +364,67 @@ function scoreSource(item, terms, peopleTerms) {
     if (host.endsWith(".edu.cn")) score += 1;
   } catch { /* ignore */ }
   return score;
+}
+
+function canonicalUrl(value = "") {
+  try {
+    const url = new URL(value);
+    url.hash = "";
+    for (const key of [...url.searchParams.keys()]) {
+      if (/^(utm_|spm$|from$|source$|ref$|tracking)/i.test(key)) url.searchParams.delete(key);
+    }
+    return url.href.replace(/\/$/u, "");
+  } catch { return value; }
+}
+
+async function mapWithConcurrency(values, limit, worker) {
+  const results = new Array(values.length);
+  let cursor = 0;
+  async function run() {
+    while (cursor < values.length) {
+      const index = cursor;
+      cursor += 1;
+      results[index] = await worker(values[index], index);
+    }
+  }
+  await Promise.all(Array.from({ length: Math.min(limit, values.length) }, run));
+  return results;
+}
+
+function diverseCandidates(items, limit = 14) {
+  const groups = new Map();
+  for (const item of items) {
+    if (!groups.has(item.matchedQuery)) groups.set(item.matchedQuery, []);
+    groups.get(item.matchedQuery).push(item);
+  }
+  for (const group of groups.values()) group.sort((a, b) => b.relevanceScore - a.relevanceScore || a.resultRank - b.resultRank);
+  const selected = [];
+  const selectedUrls = new Set();
+  const hostCounts = new Map();
+  let round = 0;
+  while (selected.length < limit && [...groups.values()].some((group) => group.length > round)) {
+    for (const group of groups.values()) {
+      const item = group[round];
+      if (!item || selectedUrls.has(item.url)) continue;
+      let host = "";
+      try { host = new URL(item.url).hostname; } catch { /* ignore */ }
+      if ((hostCounts.get(host) || 0) >= 2) continue;
+      selected.push(item);
+      selectedUrls.add(item.url);
+      hostCounts.set(host, (hostCounts.get(host) || 0) + 1);
+      if (selected.length >= limit) break;
+    }
+    round += 1;
+  }
+  if (selected.length < limit) {
+    for (const item of items) {
+      if (selectedUrls.has(item.url)) continue;
+      selected.push(item);
+      selectedUrls.add(item.url);
+      if (selected.length >= limit) break;
+    }
+  }
+  return selected;
 }
 
 async function searchOneText(text, serperKey, fallbackKind) {
@@ -369,13 +455,13 @@ async function searchOneText(text, serperKey, fallbackKind) {
   return found;
 }
 
-export async function searchWebSources(query, options = {}) {
+export async function searchWebResearch(query, options = {}) {
   // 像带联网检索的研究助手一样：保留原问法，同时用实体化问法交叉检索。
   // 单一口语句往往会带来同名、营销页或断章结果，不能只靠一次关键词匹配。
   const rawList = Array.isArray(query)
     ? query.filter(Boolean)
     : [query, ...(Array.isArray(options.queries) ? options.queries.filter(Boolean) : [])].filter(Boolean);
-  if (!rawList.length) return [];
+  if (!rawList.length) return { sources: [], leads: [], stats: { searchedQueries: 0, resultsFound: 0, pagesRead: 0, evidenceCount: 0 } };
 
   // 先保留 AI 明确生成的不同检索角度，再补充实体化问法。否则每条问法的扩写
   // 会挤掉后面的“反向证据”或“官方来源”查询，导致结果天然偏向单一结论。
@@ -384,71 +470,106 @@ export async function searchWebSources(query, options = {}) {
     const value = evidenceQuery(original);
     return value && value !== original ? [value, `${value} 资料`] : [];
   });
-  const textList = [...new Set([...originals, ...focused])].slice(0, 6);
-  if (!textList.length) return [];
+  const textList = [...new Set([...originals, ...focused])].slice(0, 8);
+  if (!textList.length) return { sources: [], leads: [], stats: { searchedQueries: 0, resultsFound: 0, pagesRead: 0, evidenceCount: 0 } };
   const primaryText = textList[0];
+  const primaryTerms = contentTerms(options.claim || primaryText);
   const serperKey = options.serperApiKey || options.searchApiKey || process.env.SERPER_API_KEY || "";
 
-  const all = [];
-  for (let i = 0; i < textList.length; i += 1) {
-    const results = await searchOneText(textList[i], serperKey, i);
-    all.push(...results.map((item) => ({ ...item, searchText: textList[i] })));
-    if (i < textList.length - 1) await sleep(serperKey ? 300 : SEARCH_THROTTLE_MS);
-  }
+  const resultGroups = await mapWithConcurrency(textList, serperKey ? 3 : 2, async (searchText, queryIndex) => {
+    const results = await searchOneText(searchText, serperKey, queryIndex);
+    return results.map((item, resultRank) => ({ ...item, searchText, queryIndex, resultRank }));
+  });
+  const all = resultGroups.flat();
 
   const seen = new Set();
   const trusted = [];
   for (const item of all) {
-    if (seen.has(item.url)) continue;
-    seen.add(item.url);
+    const normalizedUrl = canonicalUrl(item.url);
+    if (seen.has(normalizedUrl)) continue;
+    seen.add(normalizedUrl);
     try {
-      const host = new URL(item.url).hostname.toLowerCase();
+      const host = new URL(normalizedUrl).hostname.toLowerCase();
       const isAuthority = host.endsWith(".gov.cn") || host.endsWith(".edu.cn") || /museum|dpm\.org\.cn|cssn\.cn|people\.com\.cn|xinhuanet\.com|gmw\.cn|china\.com\.cn|chinadaily\.com\.cn/.test(host);
       const isReference = /baike\.baidu\.com|zh\.wikipedia\.org|baike\.com/.test(host);
       // Serper模式下放宽来源限制，保留所有结果但标注类型；HTML模式下只保留可信来源
       if (!serperKey && !isAuthority && !isReference) continue;
-      const terms = [...new Set(String(item.searchText || primaryText).split(/\s+/u).filter(Boolean))];
+      const queryTerms = contentTerms(item.searchText || primaryText);
+      const terms = [...new Set([...primaryTerms, ...queryTerms])];
       const peopleTerms = ["吴京", "那英", "郎朗", "郎平", "关晓彤", "关之琳", "金巧巧"].filter((name) => terms.includes(name));
       const score = scoreSource(item, terms, peopleTerms);
-      // Serper模式下，如果标题完全没匹配但来源是权威网站，给一个基础分
+      if (!coversClaimAnchors(`${item.title || ""} ${item.excerpt || ""}`, primaryTerms)) continue;
+      // 权威来源可获得基础分，但仍需至少在标题或摘要中覆盖一个核心词。
       let finalScore = score;
-      if (serperKey && score === 0 && (isAuthority || isReference)) finalScore = 3;
-      if (finalScore < MIN_RELEVANCE_SCORE && !serperKey) continue;
-      const { searchText, ...source } = item;
+      if (score > 0 && isAuthority) finalScore += 3;
+      else if (score > 0 && isReference) finalScore += 1;
+      if (finalScore < (serperKey ? 2 : MIN_RELEVANCE_SCORE)) continue;
+      const { searchText, queryIndex, resultRank, ...source } = item;
       trusted.push({
         ...source,
+        url: normalizedUrl,
         relevanceScore: finalScore,
         sourceType: isAuthority ? "authority" : isReference ? "reference" : "general",
-        matchedQuery: searchText
+        matchedQuery: searchText,
+        queryIndex,
+        resultRank
       });
     } catch { /* ignore invalid items */ }
   }
-  trusted.sort((a, b) => b.relevanceScore - a.relevanceScore);
-  const candidates = trusted.slice(0, 6);
-  const verified = [];
-  for (let i = 0; i < candidates.length; i += 1) {
-    const candidate = candidates[i];
+  trusted.sort((a, b) => b.relevanceScore - a.relevanceScore || a.resultRank - b.resultRank);
+  const candidates = diverseCandidates(trusted, 14);
+  const verified = await mapWithConcurrency(candidates, 4, async (candidate) => {
+    const next = { ...candidate, previewStatus: "unreadable", previewReason: "网页正文暂时无法读取" };
     try {
       const preview = await fetchSourcePreview({ url: candidate.url, query: candidate.matchedQuery || primaryText, excerpt: candidate.excerpt || "" });
       if (preview?.matched && preview.highlight) {
-        candidate.evidence = {
+        if (!coversClaimAnchors(`${preview.title || ""} ${preview.before || ""} ${preview.highlight || ""} ${preview.after || ""}`, primaryTerms)) {
+          next.previewStatus = "related";
+          next.previewReason = "网页涉及相近主题，但没有覆盖待核验声明的核心实体或关系";
+          return next;
+        }
+        next.evidence = {
           title: preview.title,
           url: preview.url,
           before: preview.before || "",
           highlight: preview.highlight,
           after: preview.after || "",
           matched: true,
+          matchReason: preview.matchReason || "网页正文覆盖检索要点",
           cachedAt: new Date().toISOString()
         };
-        candidate.relevanceScore += 6;
+        next.relevanceScore += 6;
+        next.previewStatus = "evidence";
+        next.previewReason = preview.matchReason || "网页正文覆盖检索要点";
+      } else {
+        next.previewStatus = "related";
+        next.previewReason = preview?.matchReason || "搜索结果相关，但正文尚不足以作为证据";
       }
-    } catch { /* 证据缓存失败不影响搜索结果 */ }
-    verified.push(candidate);
-    if (i < candidates.length - 1) await sleep(350);
-  }
-  // 只返回正文中确实覆盖多个检索要点的来源。宁可返回空，也不拿标题相关冒充证据。
+    } catch (error) {
+      next.previewReason = `搜索结果相关，但正文读取失败：${error.message}`;
+    }
+    return next;
+  });
+  // 正文证据与搜索线索分开：线索可以帮助用户继续查，但永远不会被拿去自动下结论。
   verified.sort((a, b) => Number(Boolean(b.evidence?.matched)) - Number(Boolean(a.evidence?.matched)) || b.relevanceScore - a.relevanceScore);
-  return verified.filter((item) => item.evidence?.matched).slice(0, 3);
+  const sources = verified.filter((item) => item.evidence?.matched).slice(0, 6);
+  const sourceUrls = new Set(sources.map((item) => item.url));
+  const leads = verified.filter((item) => !sourceUrls.has(item.url)).slice(0, 8);
+  return {
+    sources,
+    leads,
+    stats: {
+      searchedQueries: textList.length,
+      resultsFound: all.length,
+      relevantResults: trusted.length,
+      pagesRead: candidates.length,
+      evidenceCount: sources.length
+    }
+  };
+}
+
+export async function searchWebSources(query, options = {}) {
+  return (await searchWebResearch(query, options)).sources;
 }
 
 function isPrivateAddress(address) {
@@ -520,7 +641,7 @@ function pageText(html) {
 }
 
 function locate(text, query, excerpt) {
-  const queryTerms = [...new Set(String(query || "").split(/[，。！？；：、,.!?;:\s]+/u).map((term) => term.trim()).filter((term) => term.length >= 2))];
+  const queryTerms = contentTerms(query);
   const requiredTermHits = Math.min(2, queryTerms.length);
   const hints = [excerpt]
     .map((item) => String(item || "").trim())

@@ -40,7 +40,10 @@ test("AI service uses DeepSeek JSON Output", async (context) => {
     provider: "deepseek",
     stage: "source",
     model: "deepseek-flash",
-    payload: { source: "这是一段需要整理的测试口播稿，长度足够完成接口测试。" }
+    payload: {
+      source: "这是一段需要整理的测试口播稿，长度足够完成接口测试。",
+      selectionConversations: [{ selected: "原来的选区", stage: "rewrite", messages: [{ role: "user", text: "改得更口语" }] }]
+    }
   });
 
   assert.equal(response.result.corrected, "　　整理后的口播稿");
@@ -49,6 +52,8 @@ test("AI service uses DeepSeek JSON Output", async (context) => {
   assert.equal(requestBody.response_format.type, "json_object");
   assert.equal(requestBody.thinking.type, "disabled");
   assert.equal(requestBody.model, "deepseek-flash");
+  assert.match(requestBody.messages[1].content, /原来的选区/u);
+  assert.match(requestBody.messages[1].content, /改得更口语/u);
 });
 
 test("AI metadata stage returns a sidebar title and domain tags", async (context) => {

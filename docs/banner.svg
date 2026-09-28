@@ -1,0 +1,38 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="360" viewBox="0 0 1280 360" role="img" aria-labelledby="title desc">
+  <title id="title">言己 · 口播稿重构助手</title>
+  <desc id="desc">从参考稿到可发布口播稿的本地 AI 工作台</desc>
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#11111d"/>
+      <stop offset="0.55" stop-color="#19172c"/>
+      <stop offset="1" stop-color="#29204d"/>
+    </linearGradient>
+    <linearGradient id="accent" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#8271ff"/>
+      <stop offset="1" stop-color="#ff7e73"/>
+    </linearGradient>
+    <filter id="blur"><feGaussianBlur stdDeviation="44"/></filter>
+  </defs>
+  <rect width="1280" height="360" rx="28" fill="url(#bg)"/>
+  <circle cx="1110" cy="48" r="150" fill="#725cff" opacity=".18" filter="url(#blur)"/>
+  <circle cx="1040" cy="330" r="125" fill="#ff776d" opacity=".12" filter="url(#blur)"/>
+  <g transform="translate(82 69)">
+    <rect x="0" y="0" width="78" height="78" rx="25" fill="#6c5ce7" transform="rotate(-7 39 39)" opacity=".76"/>
+    <rect x="28" y="15" width="78" height="78" rx="25" fill="#806cf7"/>
+    <text x="67" y="69" text-anchor="middle" fill="white" font-family="Arial, sans-serif" font-size="51" font-weight="700">“</text>
+  </g>
+  <text x="214" y="126" fill="white" font-family="PingFang SC, Microsoft YaHei, sans-serif" font-size="62" font-weight="700">言己</text>
+  <text x="216" y="173" fill="#aaa4be" font-family="PingFang SC, Microsoft YaHei, sans-serif" font-size="25">口播稿重构助手 · AI Content Studio</text>
+  <text x="82" y="246" fill="#f4f2fb" font-family="PingFang SC, Microsoft YaHei, sans-serif" font-size="28" font-weight="600">把参考稿，写成我的表达</text>
+  <text x="82" y="288" fill="#aaa4be" font-family="PingFang SC, Microsoft YaHei, sans-serif" font-size="18">整理 · 改写 · 首尾 · 事实核验 · 风险表达 · 发布素材</text>
+  <rect x="82" y="316" width="500" height="4" rx="2" fill="url(#accent)"/>
+  <g transform="translate(796 95)" font-family="PingFang SC, Microsoft YaHei, sans-serif">
+    <rect width="390" height="178" rx="20" fill="#ffffff" opacity=".07" stroke="#ffffff" stroke-opacity=".13"/>
+    <text x="28" y="43" fill="#bdb7d2" font-size="14" font-weight="600">LOCAL-FIRST WORKFLOW</text>
+    <g fill="#f6f4ff" font-size="15">
+      <text x="28" y="82">01  原稿整理</text><text x="207" y="82">02  AI 改写</text>
+      <text x="28" y="117">03  开头结尾</text><text x="207" y="117">04  事实核验</text>
+      <text x="28" y="152">05  风险表达</text><text x="207" y="152">06  发布素材</text>
+    </g>
+  </g>
+</svg>

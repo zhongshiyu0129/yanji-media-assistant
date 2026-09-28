@@ -70,10 +70,7 @@ const fixedRequirements = {
 };
 
 const processFiles = [
-  ["timeline", "会话记录"],
-  ["extraction", "原稿拆解"], ["corrected", "转写纠错"], ["hooks", "开头方案"],
-  ["rewrite", "重构初稿"], ["deepened", "内容深化"], ["styled", "风格校准"],
-  ["review", "事实与风险"], ["log", "操作记录"]
+  ["timeline", "真实记录"]
 ];
 
 async function request(url, options = {}) {
@@ -550,17 +547,20 @@ function researchTraceMarkup(item) {
   const trace = Array.isArray(item.searchTrace) ? item.searchTrace : [];
   if (!trace.length) return "";
   return `<details class="research-trace"><summary><span>研究式检索轨迹</span><em>${trace.length} 个独立事实 · 点击展开</em></summary><div>${trace.map((step) => `
-    <article><header><b>${escapeHtml(step.id)}</b><span>${step.acceptedCount ? `${step.acceptedCount} 条证据入选` : "证据不足"}</span></header><p>${escapeHtml(step.claim)}</p><div>${(step.queries || []).map((query) => `<code>${escapeHtml(query)}</code>`).join("")}</div><small>${escapeHtml(step.answer || step.error || "")}</small></article>`).join("")}</div></details>`;
+    <article><header><b>${escapeHtml(step.id)}</b><span>${step.acceptedCount ? `${step.acceptedCount} 条证据入选` : "证据不足"}${step.leadCount ? ` · ${step.leadCount} 条线索` : ""}</span></header><p>${escapeHtml(step.claim)}</p><div>${(step.queries || []).map((query) => `<code>${escapeHtml(query)}</code>`).join("")}</div><small>${step.stats?.resultsFound ? `共发现 ${step.stats.resultsFound} 条结果，读取 ${step.stats.pagesRead || 0} 个网页。` : ""}${escapeHtml(step.answer || step.error || "")}</small></article>`).join("")}</div></details>`;
 }
 
 function sourceLinksMarkup(item) {
   if (!item.verificationRequested) return '<span class="source-empty-hint">尚未联网搜索。只有点击“需要校验”后才会查找来源。</span>';
-  if (!item.sources?.length) return '<span class="source-empty-hint">没有来源通过正文证据筛选，可调整检索词后重试。</span>';
-  const links = item.sources.map((source, sourceIndex) => {
-    const relation = source.aiRelation === "refutes" ? "反驳证据" : source.aiRelation === "supports" ? "支持证据" : "正文证据";
-    return `<div class="source-evidence-link"><button data-source-preview data-kind="fact" data-id="${escapeHtml(item.id)}" data-source-index="${sourceIndex}" data-url="${escapeHtml(source.url)}" data-title="${escapeHtml(source.title)}" data-query="${escapeHtml(source.atomicClaim || item.claim)}" data-excerpt="${escapeHtml(source.excerpt || "")}">▣ ${relation}：${escapeHtml(source.title)}</button>${source.aiReason ? `<small>${escapeHtml(source.aiReason)}</small>` : ""}</div>`;
+  const links = (item.sources || []).map((source, sourceIndex) => {
+    const relation = source.aiRelation === "refutes" ? "反驳证据" : source.aiRelation === "supports" ? "支持证据" : "正文相关来源";
+    const sourceType = { authority: "机构/权威", reference: "百科参考", general: "普通网页" }[source.sourceType] || "网页";
+    return `<div class="source-evidence-link"><button data-source-preview data-kind="fact" data-id="${escapeHtml(item.id)}" data-source-index="${sourceIndex}" data-url="${escapeHtml(source.url)}" data-title="${escapeHtml(source.title)}" data-query="${escapeHtml(source.atomicClaim || item.claim)}" data-excerpt="${escapeHtml(source.excerpt || "")}">▣ ${relation} · ${sourceType}：${escapeHtml(source.title)}</button>${source.aiReason ? `<small>${escapeHtml(source.aiReason)}</small>` : ""}</div>`;
   }).join("");
-  return links;
+  const leads = (item.searchLeads || []).slice(0, 8);
+  const leadMarkup = leads.length ? `<details class="search-leads"><summary>找到 ${leads.length} 条相关线索 · 尚不能直接作为结论</summary><div>${leads.map((source) => `<a href="${escapeHtml(source.url)}" target="_blank" rel="noopener noreferrer"><b>${escapeHtml(source.title || "未命名网页")}</b><span>${escapeHtml(source.previewReason || source.excerpt || "搜索结果相关，但正文证据不足")}</span></a>`).join("")}</div></details>` : "";
+  if (!links && !leadMarkup) return '<span class="source-empty-hint">没有找到相关结果，可调整检索词后重试。</span>';
+  return `${links || '<span class="source-empty-hint">暂无足以下结论的正文证据。</span>'}${leadMarkup}`;
 }
 
 function reviewStage() {
@@ -643,9 +643,14 @@ function learningPanel() {
 function publishStage() {
   const publish = state.workspace.publish;
   const pronunciations = publish.pronunciations || [];
+  const manuscript = isMeaningful(state.project.files.voiceover.content) ? stripHeading(state.project.files.voiceover.content) : "";
   return `
-    <div class="stage-heading"><div><span>STEP 06</span><h2>选择发布素材</h2><p>选中的标题会同步成为左侧稿件标题，再把描述、标签和评论区话术组成发布方案。</p></div><button class="outline-action" data-action="copy-package">复制已选方案</button></div>
+    <div class="stage-heading"><div><span>STEP 06</span><h2>完整正文与发布素材</h2><p>最终修改好的正文、标题、描述、标签和评论区话术都集中在这里。</p></div><button class="outline-action" data-action="copy-package">复制完整发布方案</button></div>
     ${stageControlsMarkup()}
+    <section class="publish-manuscript">
+      <header><div><b>修改后的完整正文</b><span>这是前面整理、改写和审校后的最终版本，可在发布前继续修改</span></div><div><em id="publishManuscriptCount">${textLength(manuscript)} 字</em><button data-action="copy-manuscript">复制正文</button><button class="save" data-action="save-publish-manuscript">保存正文</button></div></header>
+      ${manuscript ? `<textarea id="publishManuscript" spellcheck="false">${escapeHtml(manuscript)}</textarea>` : '<div class="empty-list">前面的流程还没有形成完整正文，请先完成改写或组稿。</div>'}
+    </section>
     <div class="publish-grid">
       ${selectableGroup("劲爆标题", "可以吸引人，但正文必须接得住", "title", publish.titles || [])}
       ${selectableGroup("视频描述", "交代内容价值，不重复标题", "description", publish.descriptions || [])}
@@ -664,6 +669,7 @@ function bindStageEvents() {
   const rewriteEditor = $("#rewriteEditor");
   const reviewEditor = $("#reviewEditor");
   const assembledEditor = $("#assembledEditor");
+  const publishManuscript = $("#publishManuscript");
   sourceEditor?.addEventListener("input", () => {
     state.sourceDirty = true;
     $("#sourceCount").textContent = `${textLength(sourceEditor.value)} 字`;
@@ -682,6 +688,11 @@ function bindStageEvents() {
     $("#assembledCount").textContent = `${textLength(assembledEditor.value)} 字`;
     els.saveState.textContent = "完整定稿有未保存修改";
     queueWorkspaceSave();
+  });
+  publishManuscript?.addEventListener("input", () => {
+    state.rewriteDirty = true;
+    $("#publishManuscriptCount").textContent = `${textLength(publishManuscript.value)} 字`;
+    els.saveState.textContent = "发布正文有未保存修改";
   });
   $$('[data-option-edit]', els.stageContent).forEach((editor) => editor.addEventListener("input", () => {
     const list = editor.dataset.optionEdit === "opening" ? state.workspace.openingOptions : state.workspace.endingOptions;
@@ -1168,12 +1179,22 @@ async function decide(kind, id, status) {
   showToast(status === "accepted" ? (replaced ? "已接受，并替换到完整稿件" : "建议已接受，请按上下文手动调整") : status === "pending" ? "已恢复为待决定，可继续修改" : (replaced ? "已撤销替换并恢复原文" : "已记录保留原文"));
 }
 
-function openProcess(key = "extraction") {
+function openProcess(key = "timeline") {
   els.processNav.innerHTML = processFiles.map(([fileKey, label]) => `<button class="${fileKey === key ? "active" : ""}" data-process-file="${fileKey}">${label}${state.project.stages[fileKey] ? " ·" : ""}</button>`).join("");
   if (key === "timeline") {
-    const events = [...(state.workspace.activityLog || []), ...(state.workspace.conversation || []).map((item, index) => ({ id: `chat-${index}`, type: "chat", label: item.role === "user" ? "我对 AI 说" : "AI 回复", stage: item.stage, at: item.at, detail: item.text }))]
+    const selectionEvents = (state.workspace.selectionConversations || []).flatMap((session) => (session.messages || []).map((message, index) => ({
+      id: `${session.id}-${index}`,
+      type: "selection",
+      label: message.role === "user" ? "我要求修改选区" : "AI 返回选区改写",
+      stage: session.stage,
+      at: message.at || session.createdAt,
+      detail: `[选区：${String(session.selected || "").slice(0, 60)}${String(session.selected || "").length > 60 ? "…" : ""}] ${message.text || ""}`
+    })));
+    const events = [...(state.workspace.activityLog || []), ...(state.workspace.conversation || []).map((item, index) => ({ id: `chat-${index}`, type: "chat", label: item.role === "user" ? "我对 AI 说" : "AI 回复", stage: item.stage, at: item.at, detail: item.text })), ...selectionEvents]
       .sort((a, b) => new Date(b.at || b.completedAt || 0) - new Date(a.at || a.completedAt || 0));
-    els.processContent.innerHTML = `<div class="activity-timeline"><h2>本篇会话与生成记录</h2><p>这里会随项目保存，后续生成会读取最近记录作为上下文。</p>${events.length ? events.map((item) => `<article><span>${escapeHtml(stageNames[item.stage] || item.stage || "整篇")}</span><div><b>${escapeHtml(item.label || item.type || "记录")}</b><p>${escapeHtml(item.detail || item.instruction || item.error || "")}</p><small>${item.at ? new Date(item.at).toLocaleString("zh-CN") : ""}${item.status ? ` · ${escapeHtml(item.status)}` : ""}${item.elapsed ? ` · ${item.elapsed} 秒` : ""}</small></div></article>`).join("") : '<div class="empty-list">还没有生成或沟通记录。</div>'}</div>`;
+    const userMessages = (state.workspace.conversation || []).filter((item) => item.role === "user").length;
+    const selectionMessages = selectionEvents.filter((item) => item.label.startsWith("我")).length;
+    els.processContent.innerHTML = `<div class="activity-timeline"><h2>真实保存的上下文</h2><p>这里直接读取本项目的生成任务、整篇对话和选区改写记录，不再展示没有写入内容的旧过程模板。</p><div class="context-record-summary"><span><b>${(state.workspace.activityLog || []).length}</b> 次 AI 任务</span><span><b>${userMessages}</b> 次整篇沟通</span><span><b>${selectionMessages}</b> 次选区要求</span><span><b>${state.accountMemory.preferences?.length || 0}</b> 条长期偏好</span></div>${events.length ? events.map((item) => `<article><span>${escapeHtml(stageNames[item.stage] || item.stage || "整篇")}</span><div><b>${escapeHtml(item.label || item.type || "记录")}</b><p>${escapeHtml(item.detail || item.instruction || item.error || "")}</p><small>${item.at ? new Date(item.at).toLocaleString("zh-CN") : ""}${item.status ? ` · ${escapeHtml(item.status)}` : ""}${item.elapsed ? ` · ${item.elapsed} 秒` : ""}</small></div></article>`).join("") : '<div class="empty-list">还没有生成或沟通记录；下一次 AI 生成、搜索校验或对话会显示在这里。</div>'}</div>`;
   } else els.processContent.innerHTML = markdown(state.project.files[key]?.content || "# 暂无内容\n\n这个阶段还没有开始。");
   $$('[data-process-file]', els.processNav).forEach((button) => button.addEventListener("click", () => openProcess(button.dataset.processFile)));
   if (!els.processDialog.open) els.processDialog.showModal();
@@ -1199,6 +1220,21 @@ async function handleStageAction(action) {
     } else if (action === "save-review") {
       const body = formatCorrectedDraft($("#reviewEditor").value);
       await saveFile("voiceover", `# 最终口播稿\n\n${body}\n`); state.rewriteDirty = false; renderStage(); showToast("完整稿件已按统一段落规范保存");
+    } else if (action === "save-publish-manuscript") {
+      const editor = $("#publishManuscript");
+      if (!editor) return showToast("当前还没有完整正文");
+      const body = formatCorrectedDraft(editor.value);
+      await saveFile("voiceover", `# 最终口播稿\n\n${body}\n`);
+      state.workspace.bodyDraft = body;
+      await saveWorkspace();
+      state.rewriteDirty = false;
+      renderStage();
+      showToast(`完整正文已保存 · ${textLength(body)} 字`);
+    } else if (action === "copy-manuscript") {
+      const body = $("#publishManuscript")?.value || stripHeading(state.project.files.voiceover.content);
+      if (!body.trim()) return showToast("当前还没有完整正文");
+      await navigator.clipboard.writeText(body.trim());
+      showToast("修改后的完整正文已复制");
     } else if (action === "review-edit") {
       state.reviewMode = "edit"; renderStage();
     } else if (action === "review-annotated") {
@@ -1255,10 +1291,11 @@ async function handleStageAction(action) {
 
 async function copyPackage() {
   const p = state.workspace.publish, d = state.workspace.decisions;
-  const lines = [p.titles?.[d.title], p.descriptions?.[d.description], ...(d.tags || []).map((tag) => `#${tag}`), p.comments?.[d.comment]].filter(Boolean);
+  const manuscript = $("#publishManuscript")?.value || (isMeaningful(state.project.files.voiceover.content) ? stripHeading(state.project.files.voiceover.content) : "");
+  const lines = [p.titles?.[d.title], manuscript, p.descriptions?.[d.description], ...(d.tags || []).map((tag) => `#${tag}`), p.comments?.[d.comment]].filter(Boolean);
   if (!lines.length) return showToast("请先选择要使用的发布素材");
   await navigator.clipboard.writeText(lines.join("\n\n"));
-  showToast("已选发布方案已复制");
+  showToast("完整正文与已选发布素材已复制");
 }
 
 async function learnFromProject() {
@@ -1356,10 +1393,18 @@ async function searchFactSources(button) {
   const queryInput = $(`[data-source-query][data-id="${CSS.escape(item.id)}"]`, els.stageContent);
   const query = (queryInput?.value || item.sourceQuery || `${item.claim} ${item.summary || ""}`).trim();
   if (!query) return showToast("请先填写检索词");
+  const activity = appendActivity({
+    type: "research",
+    stage: "review",
+    status: "running",
+    label: "搜索校验事实",
+    detail: `${item.claim}\n检索词：${query}`
+  });
   if (queryInput) { item.sourceQuery = query; queryInput.value = query; }
   item.verificationRequested = true;
   item.verificationComplete = false;
   item.sources = [];
+  item.searchLeads = [];
   item.searchTrace = [];
   item.suggestion = "";
   delete item.verdict;
@@ -1402,6 +1447,7 @@ async function searchFactSources(button) {
       setStatus("running", `${event.label}${event.detail ? `：${event.detail}` : ""} · ${elapsed} 秒`, percent);
     });
     item.sources = data.sources || [];
+    item.searchLeads = data.leads || [];
     item.searchPlan = data.plan || null;
     item.searchTrace = data.trace || [];
     item.searchAnswer = data.answer || "";
@@ -1423,7 +1469,15 @@ async function searchFactSources(button) {
     const verdictLabel = { supported: "证据支持", refuted: "证据反驳", nei: "证据不足" }[item.verdict] || "已找到正文证据，待人工判断";
     state.sourceSearches[item.id] = item.sources.length
       ? { status: "success", percent: 100, message: `搜索校验完成：${verdictLabel}，保留 ${item.sources.length} 个正文来源 · ${elapsed} 秒。` }
-      : { status: "empty", percent: 100, message: `研究完成：没有来源通过正文证据与语义复核 · ${elapsed} 秒。${data.answer || "可换词重试"}` };
+      : item.searchLeads.length
+        ? { status: "partial", percent: 100, message: `找到 ${item.searchLeads.length} 条相关线索，但正文证据还不足以下结论 · ${elapsed} 秒。` }
+        : { status: "empty", percent: 100, message: `研究完成：没有找到相关结果 · ${elapsed} 秒。${data.answer || "可换词重试"}` };
+    Object.assign(activity, {
+      status: "complete",
+      completedAt: new Date().toISOString(),
+      elapsed,
+      detail: `${item.claim}\n${data.answer || "搜索校验完成"}`
+    });
     await saveWorkspace();
     const pageY = window.scrollY;
     const manuscriptScroll = $("#annotatedCopy")?.scrollTop ?? $("#reviewEditor")?.scrollTop ?? 0;
@@ -1436,8 +1490,10 @@ async function searchFactSources(button) {
       if (manuscriptPane) manuscriptPane.scrollTop = manuscriptScroll;
       if (reviewPane) reviewPane.scrollTop = reviewScroll;
     });
-    showToast(item.sources.length ? `${verdictLabel} · 已找到 ${item.sources.length} 个正文来源` : "没有找到足够可靠的来源，这条断言应谨慎保留");
+    showToast(item.sources.length ? `${verdictLabel} · 已找到 ${item.sources.length} 个正文来源` : item.searchLeads.length ? `找到了 ${item.searchLeads.length} 条相关线索，但还不足以下结论` : "没有找到相关结果，可换一组检索词重试");
   } catch (error) {
+    Object.assign(activity, { status: "error", completedAt: new Date().toISOString(), error: error.message });
+    await saveWorkspace().catch(() => {});
     setStatus("error", `搜索失败：${error.message}，可修改检索词后重试`);
     showToast(error.message);
     button.disabled = false;
@@ -1465,6 +1521,7 @@ async function searchAllFactSources(button) {
         });
         const sources = data.sources || [];
         state.workspace.factChecks[index].sources = sources;
+        state.workspace.factChecks[index].searchLeads = data.leads || [];
         state.workspace.factChecks[index].searchPlan = data.plan || null;
         state.workspace.factChecks[index].searchTrace = data.trace || [];
         state.workspace.factChecks[index].searchAnswer = data.answer || "";
@@ -1719,7 +1776,9 @@ function currentAIPayload() {
     : isMeaningful(state.project.files.styled.content) ? stripHeading(state.project.files.styled.content) : corrected);
   return {
     source, corrected, draft: formatCorrectedDraft(draft), settings: state.workspace.settings,
-    conversation: state.workspace.conversation || [], activityLog: (state.workspace.activityLog || []).slice(-30), projectMemory: state.workspace.projectMemory || {}
+    conversation: state.workspace.conversation || [], activityLog: (state.workspace.activityLog || []).slice(-30),
+    selectionConversations: (state.workspace.selectionConversations || []).slice(0, 12),
+    projectMemory: state.workspace.projectMemory || {}
   };
 }
 

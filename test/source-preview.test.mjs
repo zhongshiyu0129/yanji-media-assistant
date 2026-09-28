@@ -1,6 +1,12 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { fetchSourcePreview } from "../server/source-preview.mjs";
+import { evidenceQuery, fetchSourcePreview } from "../server/source-preview.mjs";
+
+test("evidence query preserves user-provided Chinese fact phrases", () => {
+  const query = evidenceQuery("穷养儿志 富养女德 古籍 出处");
+  assert.match(query, /穷养儿志/u);
+  assert.match(query, /富养女德/u);
+});
 
 test("source preview rejects local and private addresses", async () => {
   await assert.rejects(() => fetchSourcePreview({ url: "http://127.0.0.1/private" }), /无法预览/);

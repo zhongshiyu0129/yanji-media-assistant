@@ -1,4 +1,4 @@
-import { searchWebSources } from "./source-preview.mjs";
+import { evidenceQuery, searchWebResearch } from "./source-preview.mjs";
 
 function clean(value = "") {
   return String(value).replace(/\s+/gu, " ").trim();
@@ -10,7 +10,16 @@ function unique(values = []) {
 
 export function fallbackResearchPlan({ claim = "", query = "", queries = [] } = {}) {
   const text = clean(claim || query);
-  const plannedQueries = unique([query, ...queries, `${text} 官方 资料`, `${text} 是否属实`, text]).slice(0, 5);
+  const focused = evidenceQuery(query || text);
+  const quote = text.length > 8 && text.length <= 48 ? `"${text}"` : "";
+  const plannedQueries = unique([
+    query,
+    ...queries,
+    focused,
+    quote,
+    `${focused || text} 官方 博物馆 大学 论文`,
+    `${focused || text} 争议 误传 辟谣`
+  ]).slice(0, 6);
   return {
     summary: "使用原始声明生成支持、权威来源和反向核验查询。",
     claims: [{ id: "C1", text, queries: plannedQueries }]
@@ -21,7 +30,7 @@ function normalizePlan(result, fallback) {
   const claims = (result?.claims || []).map((item, index) => ({
     id: clean(item.id) || `C${index + 1}`,
     text: clean(item.text),
-    queries: unique(item.queries).slice(0, 5)
+    queries: unique(item.queries).slice(0, 6)
   })).filter((item) => item.text && item.queries.length).slice(0, 4);
   return claims.length ? { summary: clean(result.summary), claims } : fallback;
 }
@@ -54,6 +63,7 @@ export function createResearchService(ai) {
       await onProgress({ percent: 18, label: `已拆成 ${plan.claims.length} 个独立事实`, detail: planningNote });
       const trace = [];
       const accepted = [];
+      const discoveredLeads = [];
 
       for (let index = 0; index < plan.claims.length; index += 1) {
         const atomic = plan.claims[index];
@@ -65,12 +75,18 @@ export function createResearchService(ai) {
         });
 
         let candidates = [];
+        let leads = [];
+        let stats = {};
         let error = "";
         try {
-          candidates = await searchWebSources(atomic.queries[0] || atomic.text, {
+          const researchResult = await searchWebResearch(atomic.queries[0] || atomic.text, {
             serperApiKey: searchApiKey,
+            claim: atomic.text,
             queries: atomic.queries.slice(1)
           });
+          candidates = researchResult.sources;
+          leads = researchResult.leads;
+          stats = researchResult.stats;
         } catch (searchError) {
           error = searchError.message;
         }
@@ -78,7 +94,7 @@ export function createResearchService(ai) {
         await onProgress({
           percent: Math.min(78, startPercent + 12),
           label: `已读取事实 ${index + 1} 的候选网页`,
-          detail: candidates.length ? `有 ${candidates.length} 个来源通过正文证据门槛，正在独立复核` : "没有候选网页通过正文证据门槛"
+          detail: `${stats.resultsFound || 0} 条搜索结果中读取 ${stats.pagesRead || 0} 页；${candidates.length} 页形成正文证据，${leads.length} 条保留为相关线索`
         });
 
         let answer = candidates.length ? "正文证据相关性检查已通过。" : "没有找到能直接证明该事实的网页正文。";
@@ -103,14 +119,21 @@ export function createResearchService(ai) {
           }
         }
 
+        const selectedUrls = new Set(selected.map((source) => source.url));
+        const rejectedEvidence = candidates
+          .filter((source) => !selectedUrls.has(source.url))
+          .map((source) => ({ ...source, previewReason: "正文相关，但 AI 认为尚未直接支持或反驳这条声明" }));
         const tagged = selected.map((source) => ({ ...source, atomicClaimId: atomic.id, atomicClaim: atomic.text }));
         accepted.push(...tagged);
+        discoveredLeads.push(...[...leads, ...rejectedEvidence].map((source) => ({ ...source, atomicClaimId: atomic.id, atomicClaim: atomic.text })));
         trace.push({
           id: atomic.id,
           claim: atomic.text,
           queries: atomic.queries,
           candidateCount: candidates.length,
           acceptedCount: tagged.length,
+          leadCount: leads.length + rejectedEvidence.length,
+          stats,
           answer,
           error
         });
@@ -124,15 +147,22 @@ export function createResearchService(ai) {
         seen.add(key);
         return true;
       });
+      const sourceUrls = new Set(sources.map((source) => source.url));
+      const leadUrls = new Set();
+      const leads = discoveredLeads.filter((source) => {
+        if (!source.url || sourceUrls.has(source.url) || leadUrls.has(source.url)) return false;
+        leadUrls.add(source.url);
+        return true;
+      }).sort((a, b) => (b.relevanceScore || 0) - (a.relevanceScore || 0)).slice(0, 12);
       const supported = sources.filter((item) => item.aiRelation === "supports").length;
       const refuted = sources.filter((item) => item.aiRelation === "refutes").length;
       const unresolved = trace.filter((item) => item.acceptedCount === 0).length;
       const undecided = sources.length - supported - refuted;
       const answer = configuredAI
-        ? `共核验 ${trace.length} 个独立事实：${supported} 条支持证据，${refuted} 条反驳证据，${undecided} 条正文相关证据待人工判断，${unresolved} 个事实证据不足。`
-        : `共核验 ${trace.length} 个独立事实，找到 ${sources.length} 个正文相关来源；配置 AI 后可继续判断支持或反驳。`;
+        ? `共核验 ${trace.length} 个独立事实：${supported} 条支持证据，${refuted} 条反驳证据，${undecided} 条正文相关证据待人工判断，另保留 ${leads.length} 条搜索线索，${unresolved} 个事实证据不足。`
+        : `共核验 ${trace.length} 个独立事实，找到 ${sources.length} 个正文相关来源，另保留 ${leads.length} 条搜索线索；配置 AI 后可继续判断支持或反驳。`;
       await onProgress({ percent: 100, label: "研究式搜索完成", detail: answer });
-      return { sources, answer, plan, trace };
+      return { sources, leads, answer, plan, trace };
     }
   };
 }

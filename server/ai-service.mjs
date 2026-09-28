@@ -210,6 +210,13 @@ function stagePrompt(stage, payload, profile, rules, memory, accountName) {
   const projectContext = limited(JSON.stringify({
     recentConversation: Array.isArray(payload.conversation) ? payload.conversation.slice(-20) : [],
     recentActivity: Array.isArray(payload.activityLog) ? payload.activityLog.slice(-30) : [],
+    recentSelectionConversations: Array.isArray(payload.selectionConversations)
+      ? payload.selectionConversations.slice(0, 12).map((item) => ({
+          selected: limited(item.selected).slice(0, 500),
+          stage: item.stage,
+          messages: Array.isArray(item.messages) ? item.messages.slice(-8) : []
+        }))
+      : [],
     projectMemory: payload.projectMemory || {}
   }));
   const shared = `\n账号：${accountName}\n目标字数：${target} 个汉字\n\n账号风格档案：\n${limited(profile)}\n\n账号长期改稿记忆：\n${limited(memory)}\n\n本篇稿件记忆（对话与已学习信息）：\n${projectContext}\n`;
@@ -227,8 +234,8 @@ function stagePrompt(stage, payload, profile, rules, memory, accountName) {
     suggestion: `你是逐条审校的改稿助手。围绕一个事实核验或风险表达卡片与用户对话，改进“建议改成”的文字。修改后的 suggestion 必须能直接替换进全文，保持上下文顺畅，不要扩写无关内容。若用户只是提问，reply 负责解释，但 suggestion 仍返回当前最合适版本。${shared}\n审校类型：${limited(payload.kind)}\n原文定位：${limited(payload.claim)}\n判断理由：${limited(payload.reason)}\n来源证据：${limited(JSON.stringify(payload.sources || []))}\n当前建议：${limited(payload.suggestion)}\n本卡片对话：${limited(JSON.stringify(payload.reviewConversation || []))}\n用户刚说：${limited(payload.message)}`,
     selection: `你是嵌入稿件编辑器的 AI 改稿助手。用户刚刚在稿件中选中了一段文字，并说明希望怎样修改。只改选中部分，replacement 必须能够直接替换原文字段，与选区前后的语气、指代和事实衔接自然；不要重复前后文，不要擅自改动未选中内容。reply 用一句话说明修改思路。${shared}\n选区前文：${limited(payload.before)}\n选中文字：${limited(payload.selected)}\n选区后文：${limited(payload.after)}\n用户要求：${limited(payload.message)}`,
     learn: `你是创作者风格分析师。对比参考原稿和创作者最终确认的定稿，只总结能够从实际删改中观察到的稳定偏好，不要把这篇稿件独有的事实内容当成长期风格。输出一段简要总结和 3—10 条可在未来改稿中执行的偏好。${shared}\n参考原稿：\n${source}\n\n最终定稿：\n${draft}`,
-    verify: `你是只依据给定证据下判断的证据核验员。下面给你一条待验证声明，以及检索到的多个来源（含标题、摘要和已抓取的正文摘录）。请只使用这些来源中的信息，不要调用你自己的背景知识。\n判断标准：\n- supported：有来源正文明确支持该声明的核心事实；\n- refuted：来源正文与声明矛盾，此时在 correctStatement 中给出有依据的正确说法；\n- nei：来源不足、没有直接涉及，或多个来源互相冲突，无法据此判断。\nreasoning 要点名是哪些来源、哪段正文支持或反驳了什么。若证据只是间接相关、标题蹭词而正文没有实质内容，应判 nei 而不是 supported。${shared}\n待验证声明：${limited(payload.claim)}\n\n来源证据：\n${limited(JSON.stringify((payload.sources || []).map((s) => ({ title: s.title, url: s.url, excerpt: s.excerpt, evidence: s.evidence?.highlight || "" }))))}`,
-    sourceReview: `你是搜索结果的证据筛选器。只根据候选来源提供的标题、摘要和网页正文片段，判断它们是否直接支持或直接反驳待查声明。先把声明在心里拆成最小事实关系；如果声明包含多个核心关系，只有覆盖待查核心关系的来源才能入选。仅仅提到同一个人物、朝代、地名或姓氏属于主题相关，不属于证据，必须排除。正文片段为空、只有标题相关、营销转载、无法定位原话的结果也必须排除。selected 中的 index 必须使用候选来源原有编号；最多选择三条。没有合格来源时返回空数组，不能为了凑数保留。answer 用一两句话说明目前证据能回答到什么程度。${shared}\n待查声明：${limited(payload.claim)}\n用户检索词：${limited(payload.query)}\n候选来源：\n${limited(JSON.stringify((payload.sources || []).map((s, index) => ({ index, title: s.title, url: s.url, excerpt: s.excerpt, evidence: s.evidence?.highlight || "" }))))}`,
+    verify: `你是只依据给定证据下判断的证据核验员。下面给你一条待验证声明，以及检索到的多个来源（含标题、摘要和已抓取的正文摘录）。请只使用这些来源中的信息，不要调用你自己的背景知识。\n判断标准：\n- supported：有来源正文明确支持该声明的核心事实；\n- refuted：来源正文与声明矛盾，此时在 correctStatement 中给出有依据的正确说法；\n- nei：来源不足、没有直接涉及，或多个来源互相冲突，无法据此判断。\nreasoning 要点名是哪些来源、哪段正文支持或反驳了什么。若证据只是间接相关、标题蹭词而正文没有实质内容，应判 nei 而不是 supported。特别注意：对于“某人说过某句话”、古语出处、历史因果、研究数据等声明，大量网页重复同一句话不等于来源可靠；只有原始讲话、著作、档案、正式统计、权威机构资料，或明确交代原始出处的可靠二手来源，才能支持归属和出处。${shared}\n待验证声明：${limited(payload.claim)}\n\n来源证据：\n${limited(JSON.stringify((payload.sources || []).map((s) => ({ title: s.title, url: s.url, sourceType: s.sourceType, excerpt: s.excerpt, evidence: s.evidence?.highlight || "" }))))}`,
+    sourceReview: `你是搜索结果的证据筛选器。只根据候选来源提供的标题、摘要和网页正文片段，判断它们是否直接支持或直接反驳待查声明。先把声明在心里拆成最小事实关系；如果声明包含多个核心关系，只有覆盖待查核心关系的来源才能入选。仅仅提到同一个人物、朝代、地名或姓氏属于主题相关，不属于证据，必须排除。正文片段为空、只有标题相关、营销转载、无法定位原话的结果也必须排除。对于名人语录、古语出处和历史归因，多个自媒体或聚合页重复同一说法不能证明出处；必须优先选择原始讲话、著作、档案、正式统计、权威机构资料，或明确交代原始出处的可靠二手来源。selected 中的 index 必须使用候选来源原有编号；最多选择三条。没有合格来源时返回空数组，不能为了凑数保留。answer 用一两句话说明目前证据能回答到什么程度。${shared}\n待查声明：${limited(payload.claim)}\n用户检索词：${limited(payload.query)}\n候选来源：\n${limited(JSON.stringify((payload.sources || []).map((s, index) => ({ index, title: s.title, url: s.url, sourceType: s.sourceType, excerpt: s.excerpt, evidence: s.evidence?.highlight || "" }))))}`,
     searchPlan: `你是事实核验研究员，负责把一条稿件声明变成可执行的联网研究计划。先把复合声明拆成 1—4 个能够独立判真的原子事实；每个事实必须补全必要的人物、时间和对象，单独拿出来也能看懂。每个原子事实生成 3—5 条明显不同的搜索查询，必须同时包含：直接查核心关系的查询、优先找政府/博物馆/大学/论文/原始档案的权威查询，以及主动寻找反例、争议或否定说法的查询。不要用只有主题名词的宽泛查询，不要预设声明一定为真。${shared}\n原声明：${limited(payload.claim)}\n用户当前检索词：${limited(payload.query)}\n已有备用查询：${limited(JSON.stringify(payload.queries || []))}`
   };
   return `${prompts[stage]}\n\n只输出合法 JSON，不要使用 Markdown 代码块或添加解释。JSON 结构示例：\n${outputExample(stage)}`;

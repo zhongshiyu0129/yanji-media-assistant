@@ -39,7 +39,7 @@
           </div>
           <div class="top-actions">
             <span class="save-state"><i></i><span id="saveState">已自动保存在本地</span></span>
-            <button class="ghost-button" id="processButton">处理轨迹</button>
+            <button class="ghost-button" id="processButton">会话与生成记录</button>
             <button class="ghost-button ai-chat-button top-workflow-action" id="openChatButton">和 AI 对话</button>
             <button class="generate-button top-workflow-action" id="generateButton"><span class="spark">✦</span> 生成我的稿</button>
           </div>
@@ -73,7 +73,7 @@
     </div>
 
     <dialog id="processDialog" class="process-modal">
-      <div class="process-dialog-head"><div><span>PROCESS TRACE</span><h2>这篇稿子是怎样生成的</h2></div><button class="close-button" id="closeProcessButton" aria-label="关闭">×</button></div>
+      <div class="process-dialog-head"><div><span>CONTEXT HISTORY</span><h2>本篇会话与生成记录</h2></div><button class="close-button" id="closeProcessButton" aria-label="关闭">×</button></div>
       <div class="process-layout">
         <nav id="processNav"></nav>
         <article id="processContent"></article>
