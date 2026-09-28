@@ -37,7 +37,7 @@ function normalizePlan(result, fallback) {
 
 export function createResearchService(ai) {
   return {
-    async run({ claim, query, queries = [], searchApiKey, aiKey, provider, model, onProgress = async () => {} }) {
+    async run({ claim, query, queries = [], searchApiKey, aiKey, provider, model, context, onProgress = async () => {} }) {
       const fallback = fallbackResearchPlan({ claim, query, queries });
       const configuredAI = Boolean(aiKey) || ai.status().configured;
       let plan = fallback;
@@ -51,6 +51,7 @@ export function createResearchService(ai) {
             provider: aiKey ? provider : undefined,
             model,
             stage: "searchPlan",
+            context,
             payload: { claim, query, queries }
           });
           plan = normalizePlan(planned.result, fallback);
@@ -106,6 +107,7 @@ export function createResearchService(ai) {
               provider: aiKey ? provider : undefined,
               model,
               stage: "sourceReview",
+              context,
               payload: { claim: atomic.text, query: atomic.queries.join(" | "), sources: candidates }
             });
             const verdicts = new Map((reviewed.result.selected || []).map((item) => [Number(item.index), item]));

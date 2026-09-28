@@ -42,8 +42,8 @@ export function assertProjectId(value) {
   return id;
 }
 
-export function createProjectStore(root) {
-  const projectsRoot = path.join(root, "projects");
+export function createProjectStore(root, options = {}) {
+  const projectsRoot = options.projectsRoot || path.join(root, "projects");
 
   function projectPath(id) {
     return path.join(projectsRoot, assertProjectId(id));
@@ -157,10 +157,14 @@ export function createProjectStore(root) {
       [FILES.subtitle.path]: "# 字幕安全版\n",
       [FILES.log.path]: `# Workflow Log\n\n- 创建时间：${new Date().toISOString()}\n- 项目：${id}\n`
     };
-    files["context/account.yaml"] = "account_id: default\naccount_path: ../../accounts/default\n";
-    const accountYaml = await readOptional(path.join(root, "accounts/default/account.yaml"));
+    files["context/account.yaml"] = options.publicDemo
+      ? "account_id: anonymous\naccount_path: session-memory\n"
+      : "account_id: default\naccount_path: ../../accounts/default\n";
+    const accountYaml = options.publicDemo
+      ? ""
+      : await readOptional(path.join(root, "accounts/default/account.yaml"));
     const accountNameMatch = accountYaml.match(/^name:\s*(.+)$/m);
-    const accountName = accountNameMatch ? accountNameMatch[1].trim() : "你的账号";
+    const accountName = options.accountName || (accountNameMatch ? accountNameMatch[1].trim() : "你的账号");
     files[FILES.workspace.path] = JSON.stringify({
       version: 1,
       accountName,

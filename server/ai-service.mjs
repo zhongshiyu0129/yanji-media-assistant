@@ -293,7 +293,7 @@ function configuredProvider() {
 }
 
 export function createAIService(root) {
-  async function readContext() {
+  async function readContext(context = {}) {
     const [profile, rules, memory, accountYaml] = await Promise.all([
       fs.readFile(path.join(root, "accounts/default/profile/account_profile.md"), "utf8").catch(() => ""),
       fs.readFile(path.join(root, "accounts/default/compliance/rules.json"), "utf8").catch(() => "{}"),
@@ -302,7 +302,12 @@ export function createAIService(root) {
     ]);
     const accountNameMatch = accountYaml.match(/^name:\s*(.+)$/m);
     const accountName = accountNameMatch ? accountNameMatch[1].trim() : "你的账号";
-    return { profile, rules, memory, accountName };
+    return {
+      profile: typeof context.profile === "string" ? context.profile : profile,
+      rules,
+      memory: typeof context.memory === "string" ? context.memory : memory,
+      accountName: context.accountName || accountName
+    };
   }
 
   function status() {
@@ -318,7 +323,7 @@ export function createAIService(root) {
     };
   }
 
-  async function run({ apiKey, provider: requestedProvider, stage, model, payload, onProgress = () => {} }) {
+  async function run({ apiKey, provider: requestedProvider, stage, model, payload, context, onProgress = () => {} }) {
     const provider = Object.hasOwn(PROVIDERS, requestedProvider) ? requestedProvider : configuredProvider();
     const config = PROVIDERS[provider];
     const key = apiKey || process.env[config.envKey];
@@ -326,7 +331,7 @@ export function createAIService(root) {
     if (!Object.hasOwn(schemas, stage)) throw Object.assign(new Error("未知的 AI 处理环节"), { statusCode: 400 });
     if (!payload || typeof payload !== "object") throw Object.assign(new Error("缺少稿件内容"), { statusCode: 400 });
     await onProgress({ percent: 5, label: "已验证请求", detail: "稿件、模型与处理环节已确认" });
-    const { profile, rules, memory, accountName } = await readContext();
+    const { profile, rules, memory, accountName } = await readContext(context);
     await onProgress({ percent: 12, label: "已读取上下文", detail: "已载入账号规则、历史偏好与本篇对话" });
     const selectedModel = String(model || process.env[config.envModel] || config.defaultModel);
     const prompt = stagePrompt(stage, payload, profile, rules, memory, accountName);

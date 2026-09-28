@@ -6,6 +6,7 @@ import { createProjectStore } from "./project-store.mjs";
 import { createAIService } from "./ai-service.mjs";
 import { fetchSourcePreview } from "./source-preview.mjs";
 import { createResearchService } from "./research-service.mjs";
+import { createPublicRuntime } from "./public-runtime.mjs";
 
 const serverDir = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(serverDir, "..");
@@ -25,11 +26,13 @@ async function loadLocalEnv(filePath) {
 
 await loadLocalEnv(path.join(root, ".env.local"));
 
-const store = createProjectStore(root);
+const localStore = createProjectStore(root);
 const ai = createAIService(root);
 const research = createResearchService(ai);
 const port = Number(process.env.PORT || 4173);
-const memoryPath = path.join(root, "accounts/default/memory/editorial_memory.json");
+const host = process.env.HOST || (process.env.PUBLIC_DEMO_MODE === "true" ? "0.0.0.0" : "127.0.0.1");
+const localMemoryPath = path.join(root, "accounts/default/memory/editorial_memory.json");
+const publicRuntime = createPublicRuntime(root);
 
 const mimeTypes = {
   ".html": "text/html; charset=utf-8",
@@ -56,13 +59,13 @@ async function bodyJson(request) {
   return JSON.parse(Buffer.concat(chunks).toString("utf8"));
 }
 
-async function readMemory() {
+async function readMemory(memoryPath) {
   try { return JSON.parse(await fs.readFile(memoryPath, "utf8")); }
   catch { return { version: 1, preferences: [], learningHistory: [] }; }
 }
 
-async function saveLearning(payload) {
-  const memory = await readMemory();
+async function saveLearning(payload, memoryPath) {
+  const memory = await readMemory(memoryPath);
   const preferences = Array.isArray(payload.preferences)
     ? payload.preferences.map((item) => String(item).trim()).filter(Boolean).slice(0, 12)
     : [];
@@ -80,52 +83,91 @@ async function saveLearning(payload) {
   return memory;
 }
 
-async function writeMemory(memory) {
+async function writeMemory(memory, memoryPath) {
   const next = { version: 1, preferences: [], learningHistory: [], ...memory, updatedAt: new Date().toISOString() };
   await fs.mkdir(path.dirname(memoryPath), { recursive: true });
   await fs.writeFile(memoryPath, `${JSON.stringify(next, null, 2)}\n`, "utf8");
   return next;
 }
 
+function requestContext(request, response) {
+  if (publicRuntime.enabled) return publicRuntime.context(request, response);
+  return { sessionId: "local", store: localStore, memoryPath: localMemoryPath };
+}
+
+function clientOptions(request, payload = {}) {
+  if (publicRuntime.enabled) return { apiKey: undefined, searchApiKey: undefined, provider: undefined, model: undefined };
+  return {
+    apiKey: request.headers["x-ai-api-key"] || request.headers["x-openai-api-key"],
+    searchApiKey: request.headers["x-search-api-key"] || payload.searchApiKey,
+    provider: payload.provider,
+    model: payload.model
+  };
+}
+
+async function aiContext(context) {
+  if (!publicRuntime.enabled) return undefined;
+  return {
+    accountName: "你的账号",
+    profile: "这是一个面向短视频创作者的通用工作台。只依据本次稿件和该访客自己保存的偏好写作，不套用其他创作者的私人风格。",
+    memory: JSON.stringify(await readMemory(context.memoryPath))
+  };
+}
+
 async function api(request, response, url) {
   if (request.method === "GET" && url.pathname === "/api/health") {
-    return sendJson(response, 200, { ok: true, version: "0.1.0" });
+    return sendJson(response, 200, { ok: true, version: "0.1.0", publicDemo: publicRuntime.enabled });
   }
+  const context = requestContext(request, response);
+  const { store, memoryPath, sessionId } = context;
   if (request.method === "GET" && url.pathname === "/api/ai/status") {
-    return sendJson(response, 200, ai.status());
+    return sendJson(response, 200, {
+      ...ai.status(),
+      publicDemo: publicRuntime.enabled,
+      keyStorage: publicRuntime.enabled ? "server_environment" : ai.status().keyStorage,
+      dailyLimits: publicRuntime.enabled ? {
+        ai: publicRuntime.limits.aiPerSession,
+        search: publicRuntime.limits.searchPerSession
+      } : undefined
+    });
   }
   if (request.method === "GET" && url.pathname === "/api/memory") {
-    return sendJson(response, 200, await readMemory());
+    return sendJson(response, 200, await readMemory(memoryPath));
   }
   if (request.method === "POST" && url.pathname === "/api/memory") {
-    return sendJson(response, 200, await saveLearning(await bodyJson(request)));
+    return sendJson(response, 200, await saveLearning(await bodyJson(request), memoryPath));
   }
   if (request.method === "PUT" && url.pathname === "/api/memory") {
-    const current = await readMemory();
+    const current = await readMemory(memoryPath);
     const payload = await bodyJson(request);
     const preferences = Array.isArray(payload.preferences) ? payload.preferences.map((item) => String(item).trim()).filter(Boolean).slice(0, 60) : [];
-    return sendJson(response, 200, await writeMemory({ ...current, preferences }));
+    return sendJson(response, 200, await writeMemory({ ...current, preferences }, memoryPath));
   }
   if (request.method === "DELETE" && url.pathname === "/api/memory") {
-    return sendJson(response, 200, await writeMemory({ version: 1, preferences: [], learningHistory: [] }));
+    return sendJson(response, 200, await writeMemory({ version: 1, preferences: [], learningHistory: [] }, memoryPath));
   }
   if (request.method === "POST" && url.pathname === "/api/source-preview") {
     return sendJson(response, 200, await fetchSourcePreview(await bodyJson(request)));
   }
   if (request.method === "POST" && url.pathname === "/api/source-search") {
     const payload = await bodyJson(request);
+    if (publicRuntime.enabled) await publicRuntime.consume(sessionId, "search");
+    const access = clientOptions(request, payload);
     return sendJson(response, 200, await research.run({
       claim: payload.claim || payload.query,
       query: payload.query,
       queries: Array.isArray(payload.queries) ? payload.queries : [],
-      searchApiKey: request.headers["x-search-api-key"] || payload.searchApiKey,
-      aiKey: request.headers["x-ai-api-key"] || request.headers["x-openai-api-key"],
-      provider: payload.provider,
-      model: payload.model
+      searchApiKey: access.searchApiKey,
+      aiKey: access.apiKey,
+      provider: access.provider,
+      model: access.model,
+      context: await aiContext(context)
     }));
   }
   if (request.method === "POST" && url.pathname === "/api/source-search-stream") {
     const payload = await bodyJson(request);
+    if (publicRuntime.enabled) await publicRuntime.consume(sessionId, "search");
+    const access = clientOptions(request, payload);
     response.writeHead(200, {
       "Content-Type": "application/x-ndjson; charset=utf-8",
       "Cache-Control": "no-cache, no-transform",
@@ -137,10 +179,11 @@ async function api(request, response, url) {
         claim: payload.claim || payload.query,
         query: payload.query,
         queries: Array.isArray(payload.queries) ? payload.queries : [],
-        searchApiKey: request.headers["x-search-api-key"] || payload.searchApiKey,
-        aiKey: request.headers["x-ai-api-key"] || request.headers["x-openai-api-key"],
-        provider: payload.provider,
-        model: payload.model,
+        searchApiKey: access.searchApiKey,
+        aiKey: access.apiKey,
+        provider: access.provider,
+        model: access.model,
+        context: await aiContext(context),
         onProgress: async (event) => write({ type: "progress", ...event })
       });
       write({ type: "result", result });
@@ -151,18 +194,23 @@ async function api(request, response, url) {
   }
   if (request.method === "POST" && url.pathname === "/api/ai/run") {
     const payload = await bodyJson(request);
+    if (publicRuntime.enabled) await publicRuntime.consume(sessionId, "ai");
+    const access = clientOptions(request, payload);
     const result = await ai.run({
-      apiKey: request.headers["x-ai-api-key"] || request.headers["x-openai-api-key"],
-      searchApiKey: request.headers["x-search-api-key"] || payload.searchApiKey,
-      provider: payload.provider,
+      apiKey: access.apiKey,
+      searchApiKey: access.searchApiKey,
+      provider: access.provider,
       stage: payload.stage,
-      model: payload.model,
-      payload: payload.payload
+      model: access.model,
+      payload: payload.payload,
+      context: await aiContext(context)
     });
     return sendJson(response, 200, result);
   }
   if (request.method === "POST" && url.pathname === "/api/ai/run-stream") {
     const payload = await bodyJson(request);
+    if (publicRuntime.enabled) await publicRuntime.consume(sessionId, "ai");
+    const access = clientOptions(request, payload);
     response.writeHead(200, {
       "Content-Type": "application/x-ndjson; charset=utf-8",
       "Cache-Control": "no-cache, no-transform",
@@ -171,9 +219,10 @@ async function api(request, response, url) {
     const write = (event) => response.write(`${JSON.stringify(event)}\n`);
     try {
       const result = await ai.run({
-        apiKey: request.headers["x-ai-api-key"] || request.headers["x-openai-api-key"],
-        searchApiKey: request.headers["x-search-api-key"] || payload.searchApiKey,
-        provider: payload.provider, stage: payload.stage, model: payload.model, payload: payload.payload,
+        apiKey: access.apiKey,
+        searchApiKey: access.searchApiKey,
+        provider: access.provider, stage: payload.stage, model: access.model, payload: payload.payload,
+        context: await aiContext(context),
         onProgress: (progress) => write({ type: "progress", ...progress })
       });
       write({ type: "result", data: result });
@@ -187,6 +236,9 @@ async function api(request, response, url) {
     return sendJson(response, 200, { projects: await store.list() });
   }
   if (request.method === "POST" && url.pathname === "/api/projects") {
+    if (publicRuntime.enabled && (await store.list()).length >= publicRuntime.limits.projectsPerSession) {
+      throw Object.assign(new Error(`公开体验版每人最多保存 ${publicRuntime.limits.projectsPerSession} 篇稿件，请先删除旧稿件`), { statusCode: 429 });
+    }
     return sendJson(response, 201, { project: await store.create(await bodyJson(request)) });
   }
   const projectMatch = url.pathname.match(/^\/api\/projects\/([^/]+)$/);
@@ -249,6 +301,6 @@ const server = http.createServer(async (request, response) => {
   }
 });
 
-server.listen(port, "127.0.0.1", () => {
-  console.log(`\n  言己已启动：http://127.0.0.1:${port}\n`);
+server.listen(port, host, () => {
+  console.log(`\n  言己已启动：http://${host}:${port}${publicRuntime.enabled ? "（公开体验模式）" : ""}\n`);
 });

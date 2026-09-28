@@ -7,7 +7,7 @@
   <img alt="DeepSeek" src="https://img.shields.io/badge/AI-DeepSeek-4d6bfe?style=flat-square" />
   <img alt="OpenAI" src="https://img.shields.io/badge/AI-OpenAI-111111?style=flat-square" />
   <img alt="Local First" src="https://img.shields.io/badge/Data-Local--first-6c5ce7?style=flat-square" />
-  <img alt="Tests" src="https://img.shields.io/badge/tests-18%20passing-2f9e68?style=flat-square" />
+  <img alt="Tests" src="https://img.shields.io/badge/tests-21%20passing-2f9e68?style=flat-square" />
 </p>
 
 <p align="center">
@@ -123,6 +123,29 @@ npm run dev
 
 项目没有前端构建步骤，也没有运行时第三方依赖。
 
+## 公开体验版部署
+
+仓库已经包含 [`render.yaml`](./render.yaml)，可以部署成任何人打开即用的公开网站。部署后，访客不需要填写 API Key：DeepSeek 和 Serper Key 只保存在服务端环境变量里，不会出现在网页、README 或浏览器请求中。
+
+<p align="center">
+  <a href="https://render.com/deploy?repo=https://github.com/zhongshiyu0129/yanji-media-assistant">
+    <img src="https://render.com/images/deploy-to-render-button.svg" alt="Deploy to Render" />
+  </a>
+</p>
+
+首次创建服务时，在 Render 控制台填写 `DEEPSEEK_API_KEY` 和 `SERPER_API_KEY`。`APP_SECRET` 会由 Render 自动生成，不需要手动填写。部署完成后，把 Render 提供的 `https://...onrender.com` 地址放到 README 顶部即可作为“在线体验”入口。
+
+公开模式默认带有以下保护：
+
+- 每位访客使用签名匿名会话，稿件、项目和长期偏好相互隔离；
+- 浏览器提交的自定义 Key、模型和服务商会被服务端忽略；
+- 每位访客每天最多生成 10 次、事实搜索 20 次；
+- 全站每天最多生成 100 次、事实搜索 300 次，达到上限后停止消耗 API；
+- 每位访客最多保存 8 篇稿件，避免匿名空间无限占用磁盘；
+- 项目、偏好和额度记录写入持久磁盘，服务重启后仍然保留。
+
+这些上限可以通过 `PUBLIC_DAILY_*` 环境变量调整。公开服务使用持久磁盘，因此 `render.yaml` 默认选择付费的 `starter` 方案；如果删除磁盘并改用免费实例，访客数据会在重启或重新部署后丢失。
+
 ## 配置
 
 可以在网页左下角的“AI 设置”中填写。网页填写的 Key 只保存在当前浏览器会话，不会写入项目文件。
@@ -143,6 +166,16 @@ SERPER_API_KEY=
 
 # 本地端口
 PORT=4173
+
+# 公开体验模式（本地开发保持 false）
+PUBLIC_DEMO_MODE=false
+APP_SECRET=
+YANJI_DATA_DIR=.public-data
+PUBLIC_DAILY_AI_LIMIT=10
+PUBLIC_DAILY_SEARCH_LIMIT=20
+PUBLIC_DAILY_AI_LIMIT_TOTAL=100
+PUBLIC_DAILY_SEARCH_LIMIT_TOTAL=300
+PUBLIC_PROJECT_LIMIT=8
 ```
 
 `.env.local` 已被 Git 忽略。请勿把真实密钥提交到仓库。
@@ -158,7 +191,7 @@ flowchart TB
   UI["Web 工作台<br/>HTML · CSS · Vanilla JS"] --> API["Node.js HTTP 服务"]
   API --> AI["AI Service<br/>DeepSeek / OpenAI"]
   API --> RESEARCH["Research Service<br/>查询规划 · 多源检索 · 证据筛选"]
-  API --> STORE["Project Store<br/>本地文件持久化"]
+  API --> STORE["Project Store<br/>本地文件 / 访客匿名空间"]
   RESEARCH --> SERPER["Serper / 公开搜索引擎"]
   RESEARCH --> WEB["网页正文读取"]
   STORE --> PROJECTS["projects/<id>"]
@@ -173,6 +206,7 @@ flowchart TB
 | `server/research-service.mjs` | 事实拆解、多轮搜索、来源复核和检索轨迹 |
 | `server/source-preview.mjs` | 搜索引擎接入、网页正文提取和安全校验 |
 | `server/project-store.mjs` | 项目创建、读取、保存和回收站管理 |
+| `server/public-runtime.mjs` | 公开部署的匿名会话隔离、签名 Cookie 和额度保护 |
 | `projects/` | 每篇稿件的输入、状态、最终稿和记录 |
 | `accounts/default/` | 账号风格、合规规则、素材与长期偏好 |
 | `test/` | Node.js 原生测试套件 |
@@ -198,6 +232,7 @@ flowchart TB
 - 浏览器中填写的 Key 使用会话级存储，关闭会话后失效。
 - `.env.local`、本地回收站和运行时数据不应提交到 Git。
 - 调用 AI 或搜索服务时，对应文本会发送给所配置的第三方服务，请根据内容敏感程度自行决定是否使用。
+- 公开体验模式下，访客数据按匿名会话隔离；清除浏览器 Cookie 后将无法找回原匿名空间。
 
 ## 测试
 

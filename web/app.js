@@ -18,7 +18,7 @@ const state = {
   selectionRunning: false,
   chatRunning: false,
   sourceSearches: {}, syncScrolling: false,
-  ai: { configured: false, provider: "deepseek", providerLabel: "DeepSeek", defaultModel: "deepseek-flash", running: false, progress: null }
+  ai: { configured: false, publicDemo: false, provider: "deepseek", providerLabel: "DeepSeek", defaultModel: "deepseek-flash", running: false, progress: null }
 };
 
 let metadataTimer;
@@ -88,7 +88,10 @@ async function requestAIStream(payload, onProgress = () => {}) {
   if (sessionKey()) headers["X-AI-Api-Key"] = sessionKey();
   if (searchKey()) headers["X-Search-Api-Key"] = searchKey();
   const response = await fetch("/api/ai/run-stream", { method: "POST", headers, body: JSON.stringify(payload) });
-  if (!response.ok || !response.body) throw new Error(`AI 请求失败（${response.status}）`);
+  if (!response.ok || !response.body) {
+    const error = await response.json().catch(() => ({}));
+    throw new Error(error.error || `AI 请求失败（${response.status}）`);
+  }
   const reader = response.body.getReader();
   const decoder = new TextDecoder();
   let buffer = "";
@@ -115,7 +118,10 @@ async function requestResearchStream(payload, onProgress = () => {}) {
   if (sessionKey()) headers["X-AI-Api-Key"] = sessionKey();
   if (searchKey()) headers["X-Search-Api-Key"] = searchKey();
   const response = await fetch("/api/source-search-stream", { method: "POST", headers, body: JSON.stringify(payload) });
-  if (!response.ok || !response.body) throw new Error(`研究式搜索请求失败（${response.status}）`);
+  if (!response.ok || !response.body) {
+    const error = await response.json().catch(() => ({}));
+    throw new Error(error.error || `研究式搜索请求失败（${response.status}）`);
+  }
   const reader = response.body.getReader();
   const decoder = new TextDecoder();
   let buffer = "";
@@ -1578,16 +1584,18 @@ async function verifyFactEvidence(button) {
   }
 }
 
-function sessionKey() { return sessionStorage.getItem(AI_KEY_STORAGE) || ""; }
-function searchKey() { return sessionStorage.getItem(SEARCH_KEY_STORAGE) || ""; }
-function selectedProvider() { return sessionStorage.getItem(AI_PROVIDER_STORAGE) || state.ai.provider || "deepseek"; }
-function selectedModel() { return sessionStorage.getItem(AI_MODEL_STORAGE) || state.ai.defaultModel || "deepseek-flash"; }
+function sessionKey() { return state.ai.publicDemo ? "" : sessionStorage.getItem(AI_KEY_STORAGE) || ""; }
+function searchKey() { return state.ai.publicDemo ? "" : sessionStorage.getItem(SEARCH_KEY_STORAGE) || ""; }
+function selectedProvider() { return state.ai.publicDemo ? state.ai.provider : sessionStorage.getItem(AI_PROVIDER_STORAGE) || state.ai.provider || "deepseek"; }
+function selectedModel() { return state.ai.publicDemo ? state.ai.defaultModel : sessionStorage.getItem(AI_MODEL_STORAGE) || state.ai.defaultModel || "deepseek-flash"; }
 function hasAIKey() { return state.ai.configured || Boolean(sessionKey()); }
 
 function updateConnectionStatus() {
   const ready = hasAIKey();
   els.connectionDot.classList.toggle("ready", ready);
-  els.connectionText.textContent = state.ai.configured
+  els.connectionText.textContent = state.ai.publicDemo
+    ? `公开体验版已由站点配置 ${state.ai.providerLabel || "AI"}，无需填写密钥`
+    : state.ai.configured
     ? `本机 ${state.ai.providerLabel || "AI"} 已配置，可直接使用`
     : ready ? "当前浏览器会话已保存密钥" : "尚未配置 API Key";
   els.apiKeyInput.placeholder = state.ai.configured ? "已由本机环境变量提供，可留空" : "sk-…";
@@ -1597,6 +1605,7 @@ function updateConnectionStatus() {
 }
 
 function openAISettings() {
+  if (state.ai.publicDemo) return showToast("公开体验版已配置 AI，无需填写 API Key");
   els.apiKeyInput.value = "";
   updateConnectionStatus();
   els.aiSettingsDialog.showModal();
@@ -1883,7 +1892,7 @@ async function runAIStage({ stageOverride, bypassPrompt = false } = {}) {
     await saveWorkspace().catch(() => {});
     setAIProgress({ status: "error", label: "AI 处理未完成", detail: error.message, elapsed: Math.floor((Date.now() - startedAt) / 1000) });
     showToast(error.message);
-    if (/API Key|Incorrect API key|401/i.test(error.message)) openAISettings();
+    if (!state.ai.publicDemo && /API Key|Incorrect API key|401/i.test(error.message)) openAISettings();
   } finally {
     clearInterval(aiProgressTimer);
     state.ai.running = false;
@@ -2162,6 +2171,12 @@ async function init() {
     }
     const [aiStatus, memory] = await Promise.all([request("/api/ai/status"), request("/api/memory")]);
     state.ai = { ...state.ai, ...aiStatus };
+    if (state.ai.publicDemo) {
+      sessionStorage.removeItem(AI_KEY_STORAGE);
+      sessionStorage.removeItem(SEARCH_KEY_STORAGE);
+      $("#aiSettingsButton").hidden = true;
+      els.saveState.textContent = "已保存到你的匿名空间";
+    }
     state.accountMemory = memory;
     state.projects = (await request("/api/projects")).projects;
     renderProjects();
